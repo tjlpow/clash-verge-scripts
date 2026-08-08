@@ -199,19 +199,25 @@ function main(config) {
     "DOMAIN-SUFFIX,elevenlabs.io,DIRECT",
     "DOMAIN-SUFFIX,api.elevenlabs.io,DIRECT",
 
-    // 国内域名整体直连。替代原先靠 GEOIP 反查域名的做法：
-    // 域名归属在这一层定死，GEOIP 不再插手，避免误判也省掉一次解析。
-    "GEOSITE,cn,DIRECT",
+    // —— IP 层判断 ——
+    //
+    // ⚠️ 刻意不使用 GEOSITE,cn，别再加回来：
+    //    mihomo 实际加载的 geosite.dat（MetaCubeX/meta-rules-dat）里的 cn 分类
+    //    远比 v2fly 上游的 data/cn 宽，混进了 browserleaks.com / whoer.net /
+    //    ipinfo.io / ipleak.net 等一批境外站点。用它做直连判断会让这些站点
+    //    绕过代理，直接暴露你的真实 IP —— 实测就是这么泄漏的。
+    //    改用 GEOIP 按「解析出来的真实 IP 归属」判断，准确得多。
 
-    // —— IP 层兜底（no-resolve：仅对「直接连 IP」的流量生效）——
     // 局域网 IP 直连 (强烈建议保留，防止本地局域网设备断连)
-    "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
-    "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
-    "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
-    "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
+    "IP-CIDR,192.168.0.0/16,DIRECT",
+    "IP-CIDR,10.0.0.0/8,DIRECT",
+    "IP-CIDR,172.16.0.0/12,DIRECT",
+    "IP-CIDR,127.0.0.0/8,DIRECT",
 
-    // 国内 IP 直连
-    "GEOIP,CN,DIRECT,no-resolve"
+    // 国内 IP 直连。
+    // 这里不能加 no-resolve —— 必须让它对带域名的连接也做一次解析来判断归属，
+    // 否则所有国内网站都会落到 MATCH 走代理。代价是一次 DNS 解析（有缓存）。
+    "GEOIP,CN,DIRECT"
   ];
 
   // ------------------------------------------------------------

@@ -97,6 +97,12 @@ function main(config) {
     "IP-CIDR,172.16.0.0/12,DIRECT",
     "IP-CIDR,127.0.0.0/8,DIRECT",
 
+    // IPv6 局域网段，与上面的 IPv4 规则对称。
+    // Clash Verge 配置里 ipv6: true 时，纯 IPv6 的本地连接才不会被 MATCH 吃掉。
+    "IP-CIDR6,::1/128,DIRECT",   // 回环
+    "IP-CIDR6,fe80::/10,DIRECT", // 链路本地（局域网设备发现）
+    "IP-CIDR6,fc00::/7,DIRECT",  // 唯一本地地址 ULA（含 fd00::/8）
+
     // 国内 IP 直连。
     // 这里不能加 no-resolve —— 必须让它对带域名的连接也做一次解析来判断归属，
     // 否则所有国内网站都会落到 MATCH 走代理。代价是一次 DNS 解析（有缓存）。

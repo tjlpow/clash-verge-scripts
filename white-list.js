@@ -21,7 +21,10 @@ const foreignNameservers = [
 
 const dnsConfig = {
   "enable": true,
-  "listen": "0.0.0.0:1053",
+  // 只监听本机回环，避免把 DNS 解析器暴露给同局域网的其他设备。
+  // TUN 模式的 dns-hijack 在协议栈内部接管，不经过这个 socket，改动不影响正常使用。
+  // 若确实要把本机当作局域网 DNS 共享出去，再改回 0.0.0.0:1053。
+  "listen": "127.0.0.1:1053",
   "ipv6": false,
   "prefer-h3": false,
   "respect-rules": true,
@@ -30,6 +33,9 @@ const dnsConfig = {
   "enhanced-mode": "fake-ip",
   "fake-ip-range": "198.18.0.1/16",
   "fake-ip-filter": [
+    // geosite:private 覆盖 miwifi.com / localhost / localdomain / 各家路由器后台域名，
+    // 避免路由器管理页拿到 198.18.x.x 的假 IP 而打不开。
+    "geosite:private",
     "+.lan",
     "+.local",
     "+.msftconnecttest.com",
@@ -48,7 +54,11 @@ const dnsConfig = {
   "proxy-server-nameserver": [...domesticNameservers],
   "direct-nameserver": [...domesticNameservers],
   "nameserver-policy": {
-    "geosite:private,cn": domesticNameservers
+    // 本地/路由器域名交给系统 DNS（即你的路由器）解析，公网 DoH 不知道 192.168.x.x。
+    // 仅靠 fake-ip-filter 放行还不够，必须同时把解析出口指回本地才能进后台。
+    "geosite:private": ["system://"],
+    // 国内域名走国内 DoH（nameserver-policy 优先级高于 nameserver）
+    "geosite:cn": domesticNameservers
   }
 };
 
@@ -59,21 +69,32 @@ function main(config) {
   // 1. 定义你的直连白名单 (格式："规则类型, 匹配词, 策略")
   //    策略填写 DIRECT 代表直连，不走代理
   const whitelistRules = [
-    // 局域网 IP 直连 (强烈建议保留，防止本地局域网设备断连)
-    "IP-CIDR,192.168.0.0/16,DIRECT",
-    "IP-CIDR,10.0.0.0/8,DIRECT",
-    "IP-CIDR,172.16.0.0/12,DIRECT",
-    "IP-CIDR,127.0.0.0/8,DIRECT",
+    // —— 域名层判断（带域名的连接在这里就分流完，不触发额外解析）——
+
+    // 本地域名直连：路由器后台 (miwifi.com)、localhost、localdomain 等
+    "GEOSITE,private,DIRECT",
 
     // 国内常用服务直连示例 (可根据你需要直连的网站自行增删)
     "DOMAIN-SUFFIX,baidu.com,DIRECT",
     "DOMAIN-SUFFIX,taobao.com,DIRECT",
     "DOMAIN-SUFFIX,csdn.net,DIRECT",
+    // ElevenLabs 走代理会被风控拦截，必须直连（注意：会暴露真实 IP）
     "DOMAIN-SUFFIX,elevenlabs.io,DIRECT",
     "DOMAIN-SUFFIX,api.elevenlabs.io,DIRECT",
 
-    // 也可以直接利用 GEOIP 判断国内 IP 直连
-    "GEOIP,CN,DIRECT"
+    // 国内域名整体直连。替代原先靠 GEOIP 反查域名的做法：
+    // 域名归属在这一层定死，GEOIP 不再插手，避免误判也省掉一次解析。
+    "GEOSITE,cn,DIRECT",
+
+    // —— IP 层兜底（no-resolve：仅对「直接连 IP」的流量生效）——
+    // 局域网 IP 直连 (强烈建议保留，防止本地局域网设备断连)
+    "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
+    "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
+    "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
+    "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
+
+    // 国内 IP 直连
+    "GEOIP,CN,DIRECT,no-resolve"
   ];
 
   // 2. 定义兜底规则 (MATCH 必须放在最后)

@@ -1,3 +1,15 @@
+// ============================================================
+// 本文件转载自第三方仓库，非本仓库原创
+//
+// 来源仓库：xiaolin-007/clash-verge-script
+//   https://github.com/xiaolin-007/clash-verge-script
+// 原文件名：扩展脚本-地区分组.js
+//   https://github.com/xiaolin-007/clash-verge-script/blob/main/扩展脚本-地区分组.js
+//
+// 取自上游 commit f8ed54d（2025-10-25），内容原样复制，未作任何修改。
+// 上游仓库未附带 LICENSE 文件，版权归原作者所有。
+// ============================================================
+
 // 国内DNS服务器
 const domesticNameservers = [
   "https://223.5.5.5/dns-query", // 阿里DoH

@@ -1,9 +1,14 @@
 // ============================================================
 // Clash Verge 外部脚本：白名单直连 + 防 DNS 泄漏
-//                      + Google / YouTube / X 独立策略组
+//                      + Google Search / YouTube / X 独立策略组
 //
 // 基于本仓库 white-list.js，唯一的差别是多建三个 select 策略组，
 // 让这三个站点可以各自单独挑节点。其余分流逻辑与 white-list.js 完全一致。
+//
+// Google Search 组是窄范围的：只含搜索本体、搜索页渲染资源和 Chrome，
+// 目的是方便逐个节点试出哪个能用 Google 搜索的 AI Mode。
+// Google 系的其他服务（Play 商店、Firebase、golang 等）不在本组，
+// 仍走主组 Proxy。
 //
 // 三个组默认都选中主组（Proxy），也就是说刚启用时行为和 white-list.js
 // 一模一样；你在 Clash Verge 的「代理」页里手动切某个组，才会生效。
@@ -15,16 +20,54 @@
 const MAIN_GROUP = "Proxy";
 
 // —— 需要独立选节点的站点 ——
-// name    : 生成的策略组名，会出现在 Clash Verge 的「代理」页里
-// geosite : 对应的 geosite 分类
+// name     : 生成的策略组名，会出现在 Clash Verge 的「代理」页里
+// matchers : 该组的匹配规则（只写规则类型和匹配词，策略由脚本自动补上组名）
 //
-// ⚠️ 数组顺序 = 规则匹配顺序，不要随意调整：
-//    geosite:google 里含有 include:youtube，若 google 排在 youtube 前面，
-//    YouTube 流量会被 Google 组抢走，YouTube 组将永远匹配不到。
+// ⚠️ 数组顺序 = 规则匹配顺序，不要随意调整，理由见每组注释。
 const SITE_GROUPS = [
-  { name: "YouTube", geosite: "youtube" }, // youtube.com / youtu.be
-  { name: "Google",  geosite: "google"  }, // 含 android/google-play/firebase/golang 等 Google 系
-  { name: "X",       geosite: "twitter" }  // x.com / twitter.com / t.co
+  {
+    // YouTube 必须排在 Google Search 前面：
+    // geosite:youtube 里有 full:yt3.googleusercontent.com、youtubei.googleapis.com
+    // 这类精确条目，要先于下面 Google Search 的宽后缀匹配，否则会被抢走。
+    name: "YouTube",
+    matchers: ["GEOSITE,youtube"]
+  },
+  {
+    // 刻意不用 GEOSITE,google —— 那个分类带 include:android / google-play /
+    // firebase / golang / kaggle 等一大票，会把 Go 模块下载、Play 商店都拖进来。
+    // 这里只保留「搜索本体 + 搜索页渲染 + Chrome」，方便单独测 AI Mode 能用的节点。
+    name: "Google Search",
+    matchers: [
+      // —— 搜索本体：AI Mode (udm=50) 就在这个域下 ——
+      // 一并覆盖 accounts / chromewebstore / dl 等所有 *.google.com 子域
+      "DOMAIN-SUFFIX,google.com",
+      // Google 自 2017 年起已不再跳转 ccTLD，下面两条只是保险，可按需增删
+      "DOMAIN-SUFFIX,google.com.hk",
+      "DOMAIN-SUFFIX,google.co.jp",
+
+      // —— 搜索页渲染依赖 ——
+      "DOMAIN-SUFFIX,gstatic.com",           // 样式 / 脚本 / 图标
+      "DOMAIN-SUFFIX,googleusercontent.com", // 结果页图片、头像
+
+      // —— Chrome 浏览器 ——
+      "DOMAIN-SUFFIX,chrome.com",
+      "DOMAIN-SUFFIX,chromium.org",
+      "DOMAIN-SUFFIX,chromestatus.com",
+      "DOMAIN-SUFFIX,chromeos.dev",
+      "DOMAIN-SUFFIX,chromebook.com",
+      "DOMAIN-SUFFIX,gvt1.com",              // Chrome 组件 / 扩展更新
+      "DOMAIN-SUFFIX,gvt2.com",
+      "DOMAIN-SUFFIX,gvt3.com"
+
+      // 若 AI Mode 出现加载不全 / 报错，再补一条 DOMAIN-SUFFIX,googleapis.com。
+      // 默认不加是因为 fonts.googleapis.com 被大量第三方站点引用，
+      // 加了会把这些站点的字体请求也拖到本组选的节点上。
+    ]
+  },
+  {
+    name: "X",
+    matchers: ["GEOSITE,twitter"] // x.com / twitter.com / t.co
+  }
 ];
 
 // —— 防 DNS 泄漏配置（取自 xiaolin-007/clash-verge-script 优化版）——
@@ -104,7 +147,7 @@ function main(config) {
   const hasMainGroup = takenNames.has(MAIN_GROUP);
 
   const newGroups = [];
-  const resolvedName = {}; // geosite 分类 -> 实际用上的组名
+  const resolvedNames = []; // 与 SITE_GROUPS 同序，存实际用上的组名
 
   for (const site of SITE_GROUPS) {
     // 万一订阅里已经有同名组，加后缀避让；重名会让整份配置加载失败
@@ -113,7 +156,7 @@ function main(config) {
       name = `${site.name}-${i}`;
     }
     takenNames.add(name);
-    resolvedName[site.geosite] = name;
+    resolvedNames.push(name);
 
     // 选项里的第一项就是默认选中项：默认跟随主组，保持原有行为
     const options = [];
@@ -130,8 +173,8 @@ function main(config) {
   // ------------------------------------------------------------
   // 2. 三个站点的分流规则（顺序见文件顶部 SITE_GROUPS 的说明）
   // ------------------------------------------------------------
-  const siteRules = SITE_GROUPS.map(
-    site => `GEOSITE,${site.geosite},${resolvedName[site.geosite]}`
+  const siteRules = SITE_GROUPS.flatMap(
+    (site, i) => site.matchers.map(m => `${m},${resolvedNames[i]}`)
   );
 
   // ------------------------------------------------------------

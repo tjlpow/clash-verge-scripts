@@ -1,0 +1,193 @@
+// ============================================================
+// Clash Verge 外部脚本：白名单直连 + 防 DNS 泄漏
+//                      + Google / YouTube / X 独立策略组
+//
+// 基于本仓库 white-list.js，唯一的差别是多建三个 select 策略组，
+// 让这三个站点可以各自单独挑节点。其余分流逻辑与 white-list.js 完全一致。
+//
+// 三个组默认都选中主组（Proxy），也就是说刚启用时行为和 white-list.js
+// 一模一样；你在 Clash Verge 的「代理」页里手动切某个组，才会生效。
+// ============================================================
+
+// —— 主代理组名 ——
+// 必须是你机场订阅里真实存在的组名。若不是 "Proxy"（比如 "🚀 节点选择"），
+// 改这一处即可，下面的策略组和兜底规则都会跟着变。
+const MAIN_GROUP = "Proxy";
+
+// —— 需要独立选节点的站点 ——
+// name    : 生成的策略组名，会出现在 Clash Verge 的「代理」页里
+// geosite : 对应的 geosite 分类
+//
+// ⚠️ 数组顺序 = 规则匹配顺序，不要随意调整：
+//    geosite:google 里含有 include:youtube，若 google 排在 youtube 前面，
+//    YouTube 流量会被 Google 组抢走，YouTube 组将永远匹配不到。
+const SITE_GROUPS = [
+  { name: "YouTube", geosite: "youtube" }, // youtube.com / youtu.be
+  { name: "Google",  geosite: "google"  }, // 含 android/google-play/firebase/golang 等 Google 系
+  { name: "X",       geosite: "twitter" }  // x.com / twitter.com / t.co
+];
+
+// —— 防 DNS 泄漏配置（取自 xiaolin-007/clash-verge-script 优化版）——
+// 原理：enhanced-mode=fake-ip + respect-rules，让 DNS 查询也按分流规则走——
+//        国内域名用国内 DoH 直连解析，国外域名走代理 DoH 解析，避免裸连泄漏。
+// 注意：建议同时开启 Clash Verge 的 TUN 模式，DNS 接管才彻底生效。
+const domesticNameservers = [
+  "https://223.5.5.5/dns-query", // 阿里 DoH
+  "https://doh.pub/dns-query"    // 腾讯 DoH
+];
+
+const foreignNameservers = [
+  "https://208.67.222.222/dns-query", // OpenDNS
+  "https://77.88.8.8/dns-query",      // Yandex DNS
+  "https://1.1.1.1/dns-query",        // Cloudflare DNS
+  "https://8.8.4.4/dns-query"         // Google DNS
+];
+
+const dnsConfig = {
+  "enable": true,
+  // 只监听本机回环，避免把 DNS 解析器暴露给同局域网的其他设备。
+  // TUN 模式的 dns-hijack 在协议栈内部接管，不经过这个 socket，改动不影响正常使用。
+  // 若确实要把本机当作局域网 DNS 共享出去，再改回 0.0.0.0:1053。
+  "listen": "127.0.0.1:1053",
+  "ipv6": false,
+  "prefer-h3": false,
+  "respect-rules": true,
+  "use-system-hosts": false,
+  "cache-algorithm": "arc",
+  "enhanced-mode": "fake-ip",
+  "fake-ip-range": "198.18.0.1/16",
+  "fake-ip-filter": [
+    // geosite:private 覆盖 localhost / localdomain / 各家路由器后台域名，
+    // 让这些本地域名走真实解析而不是拿到 198.18.x.x 的假 IP。
+    "geosite:private",
+    "+.lan",
+    "+.local",
+    "+.msftconnecttest.com",
+    "+.msftncsi.com",
+    "localhost.ptlogin2.qq.com",
+    "localhost.sec.qq.com",
+    "+.in-addr.arpa",
+    "+.ip6.arpa",
+    "time.*.com",
+    "time.*.gov",
+    "pool.ntp.org",
+    "localhost.work.weixin.qq.com"
+  ],
+  "default-nameserver": ["223.5.5.5", "1.2.4.8"],
+  "nameserver": [...foreignNameservers],
+  "proxy-server-nameserver": [...domesticNameservers],
+  "direct-nameserver": [...domesticNameservers],
+  "nameserver-policy": {
+    // 本地域名 + 国内域名都走国内 DoH（nameserver-policy 优先级高于 nameserver，
+    // 所以 baidu/taobao 这类不会先去问国外 DNS）。
+    // 逗号键会被 mihomo 展开成 geosite:private 与 geosite:cn 两条，语法合法。
+    // 注意：公网 DoH 解析不出 192.168.x.x，路由器后台请直接用网关 IP 访问。
+    "geosite:private,cn": domesticNameservers
+  }
+};
+
+// Define main function (script entry)
+function main(config) {
+  if (!config.rules) return config;
+
+  // ------------------------------------------------------------
+  // 1. 为三个站点各建一个 select 策略组
+  // ------------------------------------------------------------
+  const existingGroups = config["proxy-groups"] || [];
+  const takenNames = new Set(existingGroups.map(g => g && g.name).filter(Boolean));
+
+  // 订阅里的全部节点名；用 proxy-providers 的订阅这里可能是空的，靠下面的 use 兜底
+  const nodeNames = (config.proxies || []).map(p => p && p.name).filter(Boolean);
+  const providerNames = Object.keys(config["proxy-providers"] || {});
+
+  // 主组不存在就不往选项里放，避免生成一个指向空气的策略导致配置加载失败
+  const hasMainGroup = takenNames.has(MAIN_GROUP);
+
+  const newGroups = [];
+  const resolvedName = {}; // geosite 分类 -> 实际用上的组名
+
+  for (const site of SITE_GROUPS) {
+    // 万一订阅里已经有同名组，加后缀避让；重名会让整份配置加载失败
+    let name = site.name;
+    for (let i = 2; takenNames.has(name); i++) {
+      name = `${site.name}-${i}`;
+    }
+    takenNames.add(name);
+    resolvedName[site.geosite] = name;
+
+    // 选项里的第一项就是默认选中项：默认跟随主组，保持原有行为
+    const options = [];
+    if (hasMainGroup) options.push(MAIN_GROUP);
+    options.push("DIRECT", ...nodeNames);
+
+    const group = { "name": name, "type": "select", "proxies": options };
+    if (providerNames.length) group["use"] = providerNames;
+    newGroups.push(group);
+  }
+
+  config["proxy-groups"] = [...existingGroups, ...newGroups];
+
+  // ------------------------------------------------------------
+  // 2. 三个站点的分流规则（顺序见文件顶部 SITE_GROUPS 的说明）
+  // ------------------------------------------------------------
+  const siteRules = SITE_GROUPS.map(
+    site => `GEOSITE,${site.geosite},${resolvedName[site.geosite]}`
+  );
+
+  // ------------------------------------------------------------
+  // 3. 本地域名直连，永远排在所有规则最前面
+  //    路由器后台 (miwifi.com)、localhost、localdomain 等
+  // ------------------------------------------------------------
+  const localRules = [
+    "GEOSITE,private,DIRECT"
+  ];
+
+  // ------------------------------------------------------------
+  // 4. 直连白名单（与 white-list.js 相同）
+  // ------------------------------------------------------------
+  const whitelistRules = [
+    // —— 域名层判断（带域名的连接在这里就分流完，不触发额外解析）——
+
+    // 国内常用服务直连示例 (可根据你需要直连的网站自行增删)
+    "DOMAIN-SUFFIX,baidu.com,DIRECT",
+    "DOMAIN-SUFFIX,taobao.com,DIRECT",
+    "DOMAIN-SUFFIX,csdn.net,DIRECT",
+    // ElevenLabs 走代理会被风控拦截，必须直连（注意：会暴露真实 IP）
+    "DOMAIN-SUFFIX,elevenlabs.io,DIRECT",
+    "DOMAIN-SUFFIX,api.elevenlabs.io,DIRECT",
+
+    // 国内域名整体直连。替代原先靠 GEOIP 反查域名的做法：
+    // 域名归属在这一层定死，GEOIP 不再插手，避免误判也省掉一次解析。
+    "GEOSITE,cn,DIRECT",
+
+    // —— IP 层兜底（no-resolve：仅对「直接连 IP」的流量生效）——
+    // 局域网 IP 直连 (强烈建议保留，防止本地局域网设备断连)
+    "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
+    "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
+    "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
+    "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
+
+    // 国内 IP 直连
+    "GEOIP,CN,DIRECT,no-resolve"
+  ];
+
+  // ------------------------------------------------------------
+  // 5. 兜底规则 (MATCH 必须放在最后)
+  // ------------------------------------------------------------
+  const catchAllRule = [
+    `MATCH,${MAIN_GROUP}`
+  ];
+
+  // ------------------------------------------------------------
+  // 6. 合并规则，覆盖订阅原有的规则列表
+  //    顺序：本地域名 > 三站点独立组 > 直连白名单 > 兜底
+  //    三站点排在白名单之前，是为了让它们完全由你手动指定的组接管，
+  //    不被后面的 GEOSITE,cn / GEOIP,CN 抢走（例如 google.cn）。
+  // ------------------------------------------------------------
+  config.rules = [...localRules, ...siteRules, ...whitelistRules, ...catchAllRule];
+
+  // 7. 覆盖 DNS 配置：启用 fake-ip 防泄漏（其余配置不动）
+  config.dns = dnsConfig;
+
+  return config;
+}

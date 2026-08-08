@@ -33,8 +33,8 @@ const dnsConfig = {
   "enhanced-mode": "fake-ip",
   "fake-ip-range": "198.18.0.1/16",
   "fake-ip-filter": [
-    // geosite:private 覆盖 miwifi.com / localhost / localdomain / 各家路由器后台域名，
-    // 避免路由器管理页拿到 198.18.x.x 的假 IP 而打不开。
+    // geosite:private 覆盖 localhost / localdomain / 各家路由器后台域名，
+    // 让这些本地域名走真实解析而不是拿到 198.18.x.x 的假 IP。
     "geosite:private",
     "+.lan",
     "+.local",
@@ -54,11 +54,11 @@ const dnsConfig = {
   "proxy-server-nameserver": [...domesticNameservers],
   "direct-nameserver": [...domesticNameservers],
   "nameserver-policy": {
-    // 本地/路由器域名交给系统 DNS（即你的路由器）解析，公网 DoH 不知道 192.168.x.x。
-    // 仅靠 fake-ip-filter 放行还不够，必须同时把解析出口指回本地才能进后台。
-    "geosite:private": ["system://"],
-    // 国内域名走国内 DoH（nameserver-policy 优先级高于 nameserver）
-    "geosite:cn": domesticNameservers
+    // 本地域名 + 国内域名都走国内 DoH（nameserver-policy 优先级高于 nameserver，
+    // 所以 baidu/taobao 这类不会先去问国外 DNS）。
+    // 逗号键会被 mihomo 展开成 geosite:private 与 geosite:cn 两条，语法合法。
+    // 注意：公网 DoH 解析不出 192.168.x.x，路由器后台请直接用网关 IP 访问。
+    "geosite:private,cn": domesticNameservers
   }
 };
 

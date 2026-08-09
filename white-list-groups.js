@@ -1,4 +1,39 @@
 // ============================================================
+// 【维护流程 · 别删这段】
+//
+// ▍权威副本 = Clash Verge 实际读取的这个文件，改动直接改它：
+//     ~/Library/Application Support/
+//       io.github.clash-verge-rev.clash-verge-rev/profiles/Script.js
+//
+// ▍GitHub 备份（两边文件名不同，属正常，路径是 API 参数决定的）：
+//     tjlpow/clash-verge-scripts  →  white-list-groups.js
+//     https://github.com/tjlpow/clash-verge-scripts/blob/main/white-list-groups.js
+//
+// ▍本机没有 git 克隆，别去找 .git 目录。用 GitHub Contents API 单文件推送：
+//
+//     cd ~/Library/Application\ Support/\
+//     io.github.clash-verge-rev.clash-verge-rev/profiles
+//
+//     REPO=tjlpow/clash-verge-scripts
+//     PATH_IN_REPO=white-list-groups.js
+//     SHA=$(gh api repos/$REPO/contents/$PATH_IN_REPO --jq .sha)
+//     gh api --method PUT repos/$REPO/contents/$PATH_IN_REPO \
+//       -f message="改动说明" \
+//       -f content="$(base64 -i Script.js)" \
+//       -f sha="$SHA"
+//
+//   （SHA 是并发保护：远程有更新时会 409 冲突，重新取 SHA 再推即可）
+//
+// ▍改完在 Clash Verge 里重载配置才生效。
+//
+// ⚠️ 改动前先关掉 Clash Verge 自带的脚本编辑器窗口 ——
+//    在它里面点保存会覆盖掉磁盘上的改动。
+//
+// ▍若把本文件换成别的版本（如不带策略组的 white-list.js），
+//   记得同步改上面的 PATH_IN_REPO，否则会推错文件。
+// ============================================================
+
+// ============================================================
 // Clash Verge 外部脚本：白名单直连 + 防 DNS 泄漏
 //                      + Google Search / YouTube / X 独立策略组
 //
@@ -237,7 +272,7 @@ function main(config) {
   // 6. 合并规则，覆盖订阅原有的规则列表
   //    顺序：本地域名 > 三站点独立组 > 直连白名单 > 兜底
   //    三站点排在白名单之前，是为了让它们完全由你手动指定的组接管，
-  //    不被后面的 GEOIP,CN 按解析出的 IP 归属抢去直连（例如 google.cn）。
+  //    不被后面的 GEOSITE,cn / GEOIP,CN 抢走（例如 google.cn）。
   // ------------------------------------------------------------
   config.rules = [...localRules, ...siteRules, ...whitelistRules, ...catchAllRule];
 
@@ -245,4 +280,4 @@ function main(config) {
   config.dns = dnsConfig;
 
   return config;
-}
+} 

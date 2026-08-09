@@ -237,7 +237,7 @@ function main(config) {
   // 6. 合并规则，覆盖订阅原有的规则列表
   //    顺序：本地域名 > 三站点独立组 > 直连白名单 > 兜底
   //    三站点排在白名单之前，是为了让它们完全由你手动指定的组接管，
-  //    不被后面的 GEOSITE,cn / GEOIP,CN 抢走（例如 google.cn）。
+  //    不被后面的 GEOIP,CN 按解析出的 IP 归属抢去直连（例如 google.cn）。
   // ------------------------------------------------------------
   config.rules = [...localRules, ...siteRules, ...whitelistRules, ...catchAllRule];
 

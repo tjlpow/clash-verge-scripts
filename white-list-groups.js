@@ -62,16 +62,26 @@ const SITE_GROUPS = [
   }
 ];
 
-// —— AI 服务规则集 ——
-// 来源：https://github.com/VPSDance/ai-proxy-rules（rule-provider，按 interval 自动刷新）
-// 海外/国内分开建组方便分别选节点；国内组的域名解析到国内 IP 时会先被
-// 第 4 步的 GEOIP,CN,DIRECT 命中，所以对应的 AI 规则必须排在它前面。
+// —— 需要独立选节点的规则集（各建一个 select 组）——
+// name     : 生成的策略组名
+// provider : rule-provider 的 key
+// url      : 规则源地址
+// behavior : classical(域名/混合规则，默认) 或 ipcidr(纯 CIDR 列表)
+//
+// 来源：
+//   AI 服务    https://github.com/VPSDance/ai-proxy-rules（main 分支）
+//   Telegram / iCloud  https://github.com/Loyalsoldier/clash-rules
+//     （release 分支才是每日自动构建的产物，master/main 只有生成源码，
+//      千万别指错分支，否则拿到的东西不会自动更新）
+// 都是 rule-provider，按 interval 自动刷新，不需要这个脚本重跑。
+// 国内AI组的域名解析到国内 IP 时会先被第 6 步的 GEOIP,CN,DIRECT 命中，
+// 所以下面这些规则都必须排在它前面，否则对应的组形同虚设选不了节点。
 //
 // 默认用 cdn.jsdelivr.net（2026-08-14 测过能连，最快）。mihomo 不支持
-// 一个 url 填多个地址自动轮询，连不上时手动把下面两条 url 里的域名换成：
+// 一个 url 填多个地址自动轮询，连不上时手动把下面 url 里的域名换成：
 //   testingcf.jsdelivr.net / fastly.jsdelivr.net / cdn.jsdmirror.com
-// 换完只需替换域名，路径（/gh/VPSDance/...）不用动。
-const AI_RULE_SETS = [
+// 换完只需替换域名，路径不用动。
+const PROVIDER_GROUPS = [
   {
     name: "国外AI",
     provider: "ai-global",
@@ -81,6 +91,33 @@ const AI_RULE_SETS = [
     name: "国内AI",
     provider: "ai-cn",
     url: "https://cdn.jsdelivr.net/gh/VPSDance/ai-proxy-rules@main/rules/clash/cn.yaml"
+  },
+  {
+    name: "Telegram",
+    provider: "telegram",
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/telegramcidr.txt",
+    behavior: "ipcidr" // 内容是纯 IP-CIDR 列表，不是域名
+  },
+  {
+    name: "iCloud",
+    provider: "icloud",
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/icloud.txt"
+  }
+];
+
+// —— 固定策略的规则集（不建组，命中直接执行固定策略，不用手动选节点）——
+// apple    : Apple 通用 CDN / 系统更新等大流量静态资源，直连更快也不占代理流量
+// ad-reject: 广告 / 追踪器域名，直接拒绝连接
+const FIXED_RULE_SETS = [
+  {
+    provider: "apple",
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/apple.txt",
+    policy: "DIRECT"
+  },
+  {
+    provider: "ad-reject",
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/reject.txt",
+    policy: "REJECT"
   }
 ];
 
@@ -139,7 +176,7 @@ function main(config) {
   if (!config.rules) return config;
 
   // ------------------------------------------------------------
-  // 1. 为站点 / AI 服务各建一个 select 策略组
+  // 1. 为站点 / 规则集各建一个 select 策略组
   // ------------------------------------------------------------
   const existingGroups = config["proxy-groups"] || [];
   const takenNames = new Set(existingGroups.map(g => g && g.name).filter(Boolean));
@@ -183,17 +220,18 @@ function main(config) {
     newGroups.push(group);
   }
 
-  // AI 规则集各建一个 select 组，逻辑跟上面站点组一致
-  const aiGroups = [];
-  const aiResolvedNames = [];
+  // rule-provider 驱动的组（AI / Telegram / iCloud）各建一个 select 组，
+  // 逻辑跟上面站点组一致
+  const providerGroups = [];
+  const providerResolvedNames = [];
 
-  for (const ai of AI_RULE_SETS) {
-    let name = ai.name;
+  for (const rs of PROVIDER_GROUPS) {
+    let name = rs.name;
     for (let i = 2; takenNames.has(name); i++) {
-      name = `${ai.name}-${i}`;
+      name = `${rs.name}-${i}`;
     }
     takenNames.add(name);
-    aiResolvedNames.push(name);
+    providerResolvedNames.push(name);
 
     const options = [];
     if (hasMainGroup) options.push(MAIN_GROUP);
@@ -201,25 +239,35 @@ function main(config) {
 
     const group = { "name": name, "type": "select", "proxies": options };
     if (providerNames.length) group["use"] = providerNames;
-    aiGroups.push(group);
+    providerGroups.push(group);
   }
 
-  config["proxy-groups"] = [...existingGroups, ...newGroups, ...aiGroups];
+  config["proxy-groups"] = [...existingGroups, ...newGroups, ...providerGroups];
 
-  // AI 规则集声明为 rule-providers，mihomo 按 interval 在后台自动刷新，
-  // 不需要这个脚本重跑
-  const aiRuleProviders = {};
-  AI_RULE_SETS.forEach(ai => {
-    aiRuleProviders[ai.provider] = {
+  // 把 PROVIDER_GROUPS 和 FIXED_RULE_SETS 都声明成 rule-providers，
+  // mihomo 按 interval 在后台自动刷新，不需要这个脚本重跑
+  const ruleProviders = {};
+  PROVIDER_GROUPS.forEach(rs => {
+    ruleProviders[rs.provider] = {
       type: "http",
-      behavior: "classical",
+      behavior: rs.behavior || "classical",
       format: "yaml",
-      url: ai.url,
-      path: `./rules/${ai.provider}.yaml`,
+      url: rs.url,
+      path: `./rules/${rs.provider}.yaml`,
       interval: 86400
     };
   });
-  config["rule-providers"] = { ...(config["rule-providers"] || {}), ...aiRuleProviders };
+  FIXED_RULE_SETS.forEach(rs => {
+    ruleProviders[rs.provider] = {
+      type: "http",
+      behavior: rs.behavior || "classical",
+      format: "yaml",
+      url: rs.url,
+      path: `./rules/${rs.provider}.yaml`,
+      interval: 86400
+    };
+  });
+  config["rule-providers"] = { ...(config["rule-providers"] || {}), ...ruleProviders };
 
   // ------------------------------------------------------------
   // 2. 站点独立分组的分流规则
@@ -228,14 +276,19 @@ function main(config) {
     (site, i) => site.matchers.map(m => `${m},${resolvedNames[i]}`)
   );
 
-  // AI 规则集对应的分流规则；必须排在第 4 步的 GEOIP,CN,DIRECT 之前，
-  // 否则国内 AI 服务会先被 GEOIP 命中直连，"国内AI" 组形同虚设选不了节点
-  const aiRules = AI_RULE_SETS.map(
-    (ai, i) => `RULE-SET,${ai.provider},${aiResolvedNames[i]}`
+  // PROVIDER_GROUPS 对应的分流规则；必须排在第 6 步的 GEOIP,CN,DIRECT 之前，
+  // 否则国内规则集（如国内AI）会先被 GEOIP 命中直连，组形同虚设选不了节点
+  const providerRules = PROVIDER_GROUPS.map(
+    (rs, i) => `RULE-SET,${rs.provider},${providerResolvedNames[i]}`
   );
 
   // ------------------------------------------------------------
-  // 3. 本地域名直连，永远排在所有规则最前面
+  // 3. 固定策略规则集（广告拒绝、Apple 直连），排在最前面优先生效
+  // ------------------------------------------------------------
+  const fixedRules = FIXED_RULE_SETS.map(rs => `RULE-SET,${rs.provider},${rs.policy}`);
+
+  // ------------------------------------------------------------
+  // 4. 本地域名直连
   //    路由器后台 (miwifi.com)、localhost、localdomain 等
   // ------------------------------------------------------------
   const localRules = [
@@ -243,7 +296,7 @@ function main(config) {
   ];
 
   // ------------------------------------------------------------
-  // 4. 直连白名单
+  // 5. 直连白名单
   // ------------------------------------------------------------
   const whitelistRules = [
     // —— 域名层 ——
@@ -271,19 +324,27 @@ function main(config) {
   ];
 
   // ------------------------------------------------------------
-  // 5. 兜底规则 (MATCH 必须放在最后)
+  // 6. 兜底规则 (MATCH 必须放在最后)
   // ------------------------------------------------------------
   const catchAllRule = [
     `MATCH,${MAIN_GROUP}`
   ];
 
   // ------------------------------------------------------------
-  // 6. 合并规则，覆盖订阅原有的规则列表
-  //    顺序：本地域名 > 站点独立组 > AI规则 > 直连白名单 > 兜底
+  // 7. 合并规则，覆盖订阅原有的规则列表
+  //    顺序：固定策略(广告/Apple) > 本地域名 > 站点独立组 > 规则集组
+  //         (AI/Telegram/iCloud) > 直连白名单 > 兜底
   // ------------------------------------------------------------
-  config.rules = [...localRules, ...siteRules, ...aiRules, ...whitelistRules, ...catchAllRule];
+  config.rules = [
+    ...fixedRules,
+    ...localRules,
+    ...siteRules,
+    ...providerRules,
+    ...whitelistRules,
+    ...catchAllRule
+  ];
 
-  // 7. 覆盖 DNS 配置
+  // 8. 覆盖 DNS 配置
   config.dns = dnsConfig;
 
   return config;

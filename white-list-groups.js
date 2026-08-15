@@ -62,6 +62,26 @@ const SITE_GROUPS = [
   }
 ];
 
+// —— 首页不单独显示的组名 ——
+// 订阅自带的 "Auto" 只想当 Proxy 的备选项，不需要单独占一个首页 tile。
+// 2026-08-15 已实测 Clash Verge 会认这个字段，首页确实不显示了。
+const HIDDEN_GROUPS = ["Auto"];
+
+// —— 按流量倍率筛选的自动测速子组 ——
+// 都是 url-test + filter：在筛出来的节点里自动选延迟最低的，本身不在
+// 首页单独显示（见下方 hidden: true），只作为 "Proxy" 的备选项出现。
+// filter 是正则，直接匹配节点名里的"流量倍率:x"部分：
+//   0\.\d+        只匹配 0.x（严格小于 1）
+//   (0\.\d+|1)    匹配 0.x 或者正好等于 1（即 <=1，排除 >1 的节点）
+// 这依赖当前订阅节点名"国家-代号-流量倍率:x"的固定格式，换机场/改了
+// 节点命名方式的话，这几条 filter 要跟着重新核对。
+const LOW_RATIO_GROUPS = [
+  { name: "Auto 低倍率", filter: "流量倍率:0\\.\\d+$" },
+  { name: "美国", filter: "^美国.*流量倍率:(0\\.\\d+|1)$" },
+  { name: "荷兰", filter: "^荷兰.*流量倍率:(0\\.\\d+|1)$" },
+  { name: "日本", filter: "^日本.*流量倍率:(0\\.\\d+|1)$" }
+];
+
 // —— 需要独立选节点的规则集（各建一个 select 组）——
 // name     : 生成的策略组名
 // provider : rule-provider 的 key
@@ -198,6 +218,60 @@ function main(config) {
     }
   }
 
+  // 按 HIDDEN_GROUPS 名单把订阅原有的组标记为 hidden，不影响功能，
+  // 只是尝试不让它单独出现在首页
+  for (const g of existingGroups) {
+    if (g && HIDDEN_GROUPS.includes(g.name)) g.hidden = true;
+  }
+
+  // 订阅自带的 "Auto" 组：过滤掉流量倍率 >1 的节点，只在性价比更高的
+  // 节点里自动测速，避免它自动选到消耗流量更贵的节点
+  const autoGroupObj = existingGroups.find(g => g && g.name === "Auto");
+  if (autoGroupObj && Array.isArray(autoGroupObj.proxies)) {
+    autoGroupObj.proxies = autoGroupObj.proxies.filter(n => /流量倍率:(0\.\d+|1)$/.test(n));
+  }
+
+  // 按流量倍率筛选的自动测速子组：url-test + filter，hidden 不占首页位置。
+  // 提前建好，好把组名塞进下面所有首页可见组的选项列表里当备选项。
+  const lowRatioGroups = [];
+  const lowRatioResolvedNames = [];
+
+  for (const lr of LOW_RATIO_GROUPS) {
+    let name = lr.name;
+    for (let i = 2; takenNames.has(name); i++) {
+      name = `${lr.name}-${i}`;
+    }
+    takenNames.add(name);
+    lowRatioResolvedNames.push(name);
+
+    // mihomo 的 filter 只对 use（proxy-providers）拉进来的节点生效，对
+    // 写死在 proxies 里的节点不起作用，所以这里先用同一条正则在 JS 里
+    // 把 nodeNames 过滤一遍，避免不符合条件的节点也被塞进候选池
+    const matched = nodeNames.filter(n => new RegExp(lr.filter).test(n));
+
+    const group = {
+      "name": name,
+      "type": "url-test",
+      "url": "http://www.gstatic.com/generate_204",
+      "interval": 300,
+      "tolerance": 50,
+      "filter": lr.filter, // 留着给未来的 proxy-providers 节点用
+      "hidden": true,
+      "proxies": matched
+    };
+    if (providerNames.length) group["use"] = providerNames;
+    lowRatioGroups.push(group);
+  }
+
+  // 塞进 Proxy 的选项列表（跟在 Auto 后面）；找不到 Proxy 就跳过，避免
+  // 生成指向空气的引用
+  if (hasMainGroup) {
+    const mainGroupObj = existingGroups.find(g => g && g.name === MAIN_GROUP);
+    const autoIndex = mainGroupObj.proxies.indexOf("Auto");
+    const insertAt = autoIndex === -1 ? 0 : autoIndex + 1;
+    mainGroupObj.proxies.splice(insertAt, 0, ...lowRatioResolvedNames);
+  }
+
   const newGroups = [];
   const resolvedNames = []; // 与 SITE_GROUPS 同序，存实际用上的组名
 
@@ -213,7 +287,7 @@ function main(config) {
     // 选项里的第一项就是默认选中项：默认跟随主组
     const options = [];
     if (hasMainGroup) options.push(MAIN_GROUP);
-    options.push("DIRECT", ...nodeNames);
+    options.push(...lowRatioResolvedNames, "DIRECT", ...nodeNames);
 
     const group = { "name": name, "type": "select", "proxies": options };
     if (providerNames.length) group["use"] = providerNames;
@@ -235,14 +309,14 @@ function main(config) {
 
     const options = [];
     if (hasMainGroup) options.push(MAIN_GROUP);
-    options.push("DIRECT", ...nodeNames);
+    options.push(...lowRatioResolvedNames, "DIRECT", ...nodeNames);
 
     const group = { "name": name, "type": "select", "proxies": options };
     if (providerNames.length) group["use"] = providerNames;
     providerGroups.push(group);
   }
 
-  config["proxy-groups"] = [...existingGroups, ...newGroups, ...providerGroups];
+  config["proxy-groups"] = [...existingGroups, ...newGroups, ...providerGroups, ...lowRatioGroups];
 
   // 把 PROVIDER_GROUPS 和 FIXED_RULE_SETS 都声明成 rule-providers，
   // mihomo 按 interval 在后台自动刷新，不需要这个脚本重跑

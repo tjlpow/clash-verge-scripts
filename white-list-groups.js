@@ -35,9 +35,9 @@
 
 // ============================================================
 // Clash Verge 外部脚本
-//   白名单直连 + 防 DNS 泄漏 + Google Search / YouTube / X 独立策略组
+//   白名单直连 + 防 DNS 泄漏 + YouTube / X / 国外AI / 国内AI 独立策略组
 //
-// 三个组均为 select，默认选中主组 Proxy；在 Clash Verge「代理」页
+// 各组均为 select，默认选中主组 Proxy；在 Clash Verge「代理」页
 // 手动切换后才会分流到不同节点。
 //
 // 各项配置的取舍理由记在提交历史里，不在本文件重复：
@@ -51,38 +51,36 @@ const MAIN_GROUP = "Proxy";
 // —— 需要独立选节点的站点 ——
 // name     : 生成的策略组名，会出现在「代理」页里
 // matchers : 匹配规则，策略由脚本自动补上组名
-//
-// ⚠️ 数组顺序即规则匹配顺序。YouTube 必须排在 Google Search 之前，
-//    否则会被后者的宽后缀抢走。
 const SITE_GROUPS = [
   {
     name: "YouTube",
     matchers: ["GEOSITE,youtube"]
   },
   {
-    // 窄范围：只含搜索本体、搜索页渲染资源、Chrome
-    name: "Google Search",
-    matchers: [
-      "DOMAIN-SUFFIX,google.com",            // 含 accounts / chromewebstore / dl 等子域
-      "DOMAIN-SUFFIX,google.com.hk",
-      "DOMAIN-SUFFIX,google.co.jp",
-
-      "DOMAIN-SUFFIX,gstatic.com",           // 样式 / 脚本 / 图标
-      "DOMAIN-SUFFIX,googleusercontent.com", // 结果页图片、头像
-
-      "DOMAIN-SUFFIX,chrome.com",
-      "DOMAIN-SUFFIX,chromium.org",
-      "DOMAIN-SUFFIX,chromestatus.com",
-      "DOMAIN-SUFFIX,chromeos.dev",
-      "DOMAIN-SUFFIX,chromebook.com",
-      "DOMAIN-SUFFIX,gvt1.com",              // Chrome 组件 / 扩展更新
-      "DOMAIN-SUFFIX,gvt2.com",
-      "DOMAIN-SUFFIX,gvt3.com"
-    ]
-  },
-  {
     name: "X",
     matchers: ["GEOSITE,twitter"]            // x.com / twitter.com / t.co
+  }
+];
+
+// —— AI 服务规则集 ——
+// 来源：https://github.com/VPSDance/ai-proxy-rules（rule-provider，按 interval 自动刷新）
+// 海外/国内分开建组方便分别选节点；国内组的域名解析到国内 IP 时会先被
+// 第 4 步的 GEOIP,CN,DIRECT 命中，所以对应的 AI 规则必须排在它前面。
+//
+// 默认用 cdn.jsdelivr.net（2026-08-14 测过能连，最快）。mihomo 不支持
+// 一个 url 填多个地址自动轮询，连不上时手动把下面两条 url 里的域名换成：
+//   testingcf.jsdelivr.net / fastly.jsdelivr.net / cdn.jsdmirror.com
+// 换完只需替换域名，路径（/gh/VPSDance/...）不用动。
+const AI_RULE_SETS = [
+  {
+    name: "国外AI",
+    provider: "ai-global",
+    url: "https://cdn.jsdelivr.net/gh/VPSDance/ai-proxy-rules@main/rules/clash/global.yaml"
+  },
+  {
+    name: "国内AI",
+    provider: "ai-cn",
+    url: "https://cdn.jsdelivr.net/gh/VPSDance/ai-proxy-rules@main/rules/clash/cn.yaml"
   }
 ];
 
@@ -141,7 +139,7 @@ function main(config) {
   if (!config.rules) return config;
 
   // ------------------------------------------------------------
-  // 1. 为三个站点各建一个 select 策略组
+  // 1. 为站点 / AI 服务各建一个 select 策略组
   // ------------------------------------------------------------
   const existingGroups = config["proxy-groups"] || [];
   const takenNames = new Set(existingGroups.map(g => g && g.name).filter(Boolean));
@@ -152,6 +150,16 @@ function main(config) {
 
   // 主组不存在就不往选项里放，避免生成一个指向空气的策略导致配置加载失败
   const hasMainGroup = takenNames.has(MAIN_GROUP);
+
+  // 订阅原有的组（Proxy、Auto 等）目前节点是写死的名单。这里统一给它们
+  // 补上 use，以后新增机场只要注册成 proxy-providers，这些组（含 Auto
+  // 自动测速）会自动把新机场节点纳入，不用逐个组手动改。
+  if (providerNames.length) {
+    for (const g of existingGroups) {
+      if (!g || !g.proxies) continue;
+      g.use = Array.from(new Set([...(g.use || []), ...providerNames]));
+    }
+  }
 
   const newGroups = [];
   const resolvedNames = []; // 与 SITE_GROUPS 同序，存实际用上的组名
@@ -175,13 +183,55 @@ function main(config) {
     newGroups.push(group);
   }
 
-  config["proxy-groups"] = [...existingGroups, ...newGroups];
+  // AI 规则集各建一个 select 组，逻辑跟上面站点组一致
+  const aiGroups = [];
+  const aiResolvedNames = [];
+
+  for (const ai of AI_RULE_SETS) {
+    let name = ai.name;
+    for (let i = 2; takenNames.has(name); i++) {
+      name = `${ai.name}-${i}`;
+    }
+    takenNames.add(name);
+    aiResolvedNames.push(name);
+
+    const options = [];
+    if (hasMainGroup) options.push(MAIN_GROUP);
+    options.push("DIRECT", ...nodeNames);
+
+    const group = { "name": name, "type": "select", "proxies": options };
+    if (providerNames.length) group["use"] = providerNames;
+    aiGroups.push(group);
+  }
+
+  config["proxy-groups"] = [...existingGroups, ...newGroups, ...aiGroups];
+
+  // AI 规则集声明为 rule-providers，mihomo 按 interval 在后台自动刷新，
+  // 不需要这个脚本重跑
+  const aiRuleProviders = {};
+  AI_RULE_SETS.forEach(ai => {
+    aiRuleProviders[ai.provider] = {
+      type: "http",
+      behavior: "classical",
+      format: "yaml",
+      url: ai.url,
+      path: `./rules/${ai.provider}.yaml`,
+      interval: 86400
+    };
+  });
+  config["rule-providers"] = { ...(config["rule-providers"] || {}), ...aiRuleProviders };
 
   // ------------------------------------------------------------
-  // 2. 三个站点的分流规则
+  // 2. 站点独立分组的分流规则
   // ------------------------------------------------------------
   const siteRules = SITE_GROUPS.flatMap(
     (site, i) => site.matchers.map(m => `${m},${resolvedNames[i]}`)
+  );
+
+  // AI 规则集对应的分流规则；必须排在第 4 步的 GEOIP,CN,DIRECT 之前，
+  // 否则国内 AI 服务会先被 GEOIP 命中直连，"国内AI" 组形同虚设选不了节点
+  const aiRules = AI_RULE_SETS.map(
+    (ai, i) => `RULE-SET,${ai.provider},${aiResolvedNames[i]}`
   );
 
   // ------------------------------------------------------------
@@ -200,9 +250,6 @@ function main(config) {
     "DOMAIN-SUFFIX,baidu.com,DIRECT",
     "DOMAIN-SUFFIX,taobao.com,DIRECT",
     "DOMAIN-SUFFIX,csdn.net,DIRECT",
-    // ElevenLabs 走代理会被风控拦截，必须直连（会暴露真实 IP）
-    "DOMAIN-SUFFIX,elevenlabs.io,DIRECT",
-    "DOMAIN-SUFFIX,api.elevenlabs.io,DIRECT",
 
     // —— IP 层 ——
     // ⚠️ 不要改用 GEOSITE,cn 做国内判断：该分类混有 browserleaks / whoer /
@@ -232,9 +279,9 @@ function main(config) {
 
   // ------------------------------------------------------------
   // 6. 合并规则，覆盖订阅原有的规则列表
-  //    顺序：本地域名 > 三站点独立组 > 直连白名单 > 兜底
+  //    顺序：本地域名 > 站点独立组 > AI规则 > 直连白名单 > 兜底
   // ------------------------------------------------------------
-  config.rules = [...localRules, ...siteRules, ...whitelistRules, ...catchAllRule];
+  config.rules = [...localRules, ...siteRules, ...aiRules, ...whitelistRules, ...catchAllRule];
 
   // 7. 覆盖 DNS 配置
   config.dns = dnsConfig;

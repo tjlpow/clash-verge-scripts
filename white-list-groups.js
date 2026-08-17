@@ -35,18 +35,40 @@
 
 // ============================================================
 // Clash Verge 外部脚本
-//   白名单直连 + 防 DNS 泄漏 + YouTube / X / 国外AI / 国内AI 独立策略组
+//   白名单直连 + 防 DNS 泄漏 + 广告拦截
+//   + YouTube / X / 国外AI / 国内AI / Telegram / iCloud 独立策略组
+//   + Auto / 低倍率 / 分国家 自动测速子组（hidden，只做备选项）
 //
-// 各组均为 select，默认选中主组 Proxy；在 Clash Verge「代理」页
-// 手动切换后才会分流到不同节点。
+// ▍两种运行模式，看有没有 proxy-providers 自动切换：
+//
+//   provider 模式（当前用的就是这个）——
+//     Merge.yaml 里把两个机场都声明成 proxy-providers，本脚本丢弃订阅
+//     自带的节点和策略组，所有组由脚本重建、用 use 同时引用全部机场。
+//     好处：每个组都能选到两家机场的节点，不再是"切订阅二选一"；
+//     以后加第三个机场只改 Merge.yaml，本文件一个字都不用动。
+//     ⚠️ 订阅链接是凭证，只留在本机的 Merge.yaml，绝不进这个文件
+//        —— 本文件会推到公开仓库。
+//
+//   单订阅模式（没有 proxy-providers 时的退路）——
+//     复用订阅自带的策略组，只做增补。
+//
+// 各组均为 select，默认选中主组；在 Clash Verge「代理」页手动切换后
+// 才会分流到不同节点。
 //
 // 各项配置的取舍理由记在提交历史里，不在本文件重复：
 //   https://github.com/tjlpow/clash-verge-scripts/commits/main/white-list-groups.js
 // ============================================================
 
 // —— 主代理组名 ——
-// 必须是订阅里真实存在的组名。改这一处，策略组和兜底规则都会跟着变。
-const MAIN_GROUP = "Proxy";
+// 不同机场订阅的主组叫法不一样（Proxy / Proxies / 节点选择 …），写死一个
+// 名字换订阅就会炸：兜底规则 MATCH 指向不存在的组时，mihomo 会直接拒绝
+// 整份配置（报 "proxy [xxx] not found"，变更被撤销）。
+// 所以按下面的顺序找第一个真实存在的组，都没有再退回订阅里第一个 select 组。
+const MAIN_GROUP_CANDIDATES = [
+  "Proxy", "Proxies", "PROXY",
+  "节点选择", "🚀 节点选择", "手动切换", "代理模式",
+  "✈️Final", "Final", "GLOBAL"
+];
 
 // —— 需要独立选节点的站点 ——
 // name     : 生成的策略组名，会出现在「代理」页里
@@ -67,19 +89,33 @@ const SITE_GROUPS = [
 // 2026-08-15 已实测 Clash Verge 会认这个字段，首页确实不显示了。
 const HIDDEN_GROUPS = ["Auto"];
 
-// —— 按流量倍率筛选的自动测速子组 ——
-// 都是 url-test + filter：在筛出来的节点里自动选延迟最低的，本身不在
-// 首页单独显示（见下方 hidden: true），只作为 "Proxy" 的备选项出现。
-// filter 是正则，直接匹配节点名里的"流量倍率:x"部分：
-//   0\.\d+        只匹配 0.x（严格小于 1）
-//   (0\.\d+|1)    匹配 0.x 或者正好等于 1（即 <=1，排除 >1 的节点）
-// 这依赖当前订阅节点名"国家-代号-流量倍率:x"的固定格式，换机场/改了
-// 节点命名方式的话，这几条 filter 要跟着重新核对。
-const LOW_RATIO_GROUPS = [
-  { name: "Auto 低倍率", filter: "流量倍率:0\\.\\d+$" },
-  { name: "美国", filter: "^美国.*流量倍率:(0\\.\\d+|1)$" },
-  { name: "荷兰", filter: "^荷兰.*流量倍率:(0\\.\\d+|1)$" },
-  { name: "日本", filter: "^日本.*流量倍率:(0\\.\\d+|1)$" }
+// —— 自动测速子组（url-test：在筛出来的节点里自动选延迟最低的）——
+// 都不在首页单独显示（hidden: true），只作为其他组的备选项出现。
+//
+// filter / exclude 都是正则，交给 mihomo 按节点名匹配。注意 mihomo 用的是
+// Go 的 RE2，**不支持** (?!...) 这类先行断言，只能用「正向匹配 + 反向排除」
+// 两个字段配合，别想着写一条否定正则。
+//
+// 两个机场的节点命名完全不同，所以 filter 要同时覆盖两种写法：
+//   TrojanFlare  日本-TY-3-流量倍率:0.6
+//   ImmTelecom   🇯🇵 JPN 01
+// 前者带流量倍率标记，后者没有 —— 所以「排除高倍率」用 exclude 做
+// （没有倍率标记的节点天然不会被排除掉），而不是写进 filter 里。
+const HIGH_RATIO_EXCLUDE = "流量倍率:(1\\.\\d+|[2-9])"; // 1.x / 2~9 倍，性价比低
+
+const AUTO_GROUPS = [
+  // 全部节点里自动选最快的（排除高倍率）。订阅自带的 Auto 在 provider
+  // 模式下已经被丢弃，所以这里自己建一个同名的。
+  { name: "Auto", filter: "", exclude: HIGH_RATIO_EXCLUDE, providerOnly: true },
+
+  // 严格低于 1 倍。只有 TrojanFlare 的节点带倍率标记，ImmTelecom 没有
+  // 倍率信息，所以这个组实际只会选到 TrojanFlare 的节点。
+  { name: "Auto 低倍率", filter: "流量倍率:0\\.", exclude: "" },
+
+  // 分国家 + 排除高倍率
+  { name: "美国", filter: "(美国|USA)", exclude: HIGH_RATIO_EXCLUDE },
+  { name: "荷兰", filter: "(荷兰|NLD)", exclude: HIGH_RATIO_EXCLUDE },
+  { name: "日本", filter: "(日本|JPN)", exclude: HIGH_RATIO_EXCLUDE }
 ];
 
 // —— 需要独立选节点的规则集（各建一个 select 组）——
@@ -105,7 +141,32 @@ const PROVIDER_GROUPS = [
   {
     name: "国外AI",
     provider: "ai-global",
-    url: "https://cdn.jsdelivr.net/gh/VPSDance/ai-proxy-rules@main/rules/clash/global.yaml"
+    url: "https://cdn.jsdelivr.net/gh/VPSDance/ai-proxy-rules@main/rules/clash/global.yaml",
+
+    // extraMatchers：规则集之外再补的规则，指向同一个组。规则集本身照常
+    // 从上游自动更新，这几条只是叠加上去。
+    //
+    // 为什么要补 —— Google 搜索里的 AI mode 不是独立域名，走的就是搜索
+    // 本体 www.google.com，ai-proxy-rules 里没有，不补的话会落到最后的
+    // MATCH 用主组的出口 IP。而 AI mode 能不能用只看 Google 在搜索会话
+    // 里看到的 IP 干不干净（旧机场的 IP 被 Google 判成国内，用不了；新
+    // 机场的可以），所以搜索本体必须跟 gemini 走同一个组、同一个出口。
+    // 2026-08-17 实测分流：
+    //   gemini.google.com → RuleSet(ai-global) → 国外AI ✅
+    //   www.google.com    → Match()            → Proxy ❌ 就是这里漏了
+    //
+    // DOMAIN-SUFFIX,google.com 一条就覆盖了 www / *.clients6（AI mode 用到的
+    // appsgenaiserver-pa、waa-pa 都在这下面）/ play / docs 等全部子域。
+    // 副作用：Gmail、Docs、Play 这些也会跟着走国外AI组 —— 这其实是好事，
+    // 同一个 Google 账号的流量走同一个出口，不容易被判成异常会话。
+    // YouTube 不受影响，GEOSITE,youtube 规则排在这些之前，仍走自己的组。
+    extraMatchers: [
+      "DOMAIN-SUFFIX,google.com",
+      "DOMAIN-SUFFIX,google.com.hk",
+      "DOMAIN-SUFFIX,google.co.jp",
+      "DOMAIN-SUFFIX,gstatic.com",          // fonts.gstatic.com 等搜索页静态资源
+      "DOMAIN-SUFFIX,googleusercontent.com" // 搜索结果里的图片、头像
+    ]
   },
   {
     name: "国内AI",
@@ -191,85 +252,143 @@ const dnsConfig = {
   }
 };
 
+// 建一个 url-test 自动测速组。
+//
+// provider 模式：节点由 use 供给，filter / exclude-filter 原样交给 mihomo，
+//   由核心在运行时匹配 —— 这也是这两个字段唯一真正生效的场景。
+// 单订阅模式：mihomo 的 filter 对写死在 proxies 里的节点**不生效**，只能
+//   在这里先用同样的正则把节点名过滤一遍；筛不出节点就返回 null 不建这个组
+//   （既没有 use 又是空 proxies 的组会让 mihomo 拒绝整份配置）。
+function buildAutoGroup(name, spec, providerNames, nodeNames) {
+  const group = {
+    "name": name,
+    "type": "url-test",
+    "url": "http://www.gstatic.com/generate_204",
+    "interval": 300,
+    "tolerance": 50,
+    "hidden": true
+  };
+
+  if (providerNames.length) {
+    group["use"] = providerNames;
+    if (spec.filter) group["filter"] = spec.filter;
+    if (spec.exclude) group["exclude-filter"] = spec.exclude;
+    return group;
+  }
+
+  let matched = nodeNames;
+  if (spec.filter) matched = matched.filter(n => new RegExp(spec.filter).test(n));
+  if (spec.exclude) matched = matched.filter(n => !new RegExp(spec.exclude).test(n));
+  if (!matched.length) return null;
+  group["proxies"] = matched;
+  return group;
+}
+
 // Define main function (script entry)
 function main(config) {
   if (!config.rules) return config;
 
   // ------------------------------------------------------------
-  // 1. 为站点 / 规则集各建一个 select 策略组
+  // 1. 策略组
   // ------------------------------------------------------------
-  const existingGroups = config["proxy-groups"] || [];
+  const providerNames = Object.keys(config["proxy-providers"] || {});
+  const providerMode = providerNames.length > 0;
+
+  // provider 模式（Merge.yaml 里声明了机场）：节点全部由 proxy-providers
+  // 供给，订阅自带的节点和策略组一律丢弃，所有组由本脚本重建。这样
+  //   · 不管当前激活的是哪份配置，跑出来的结果都一致
+  //   · 每个组都能同时选到所有机场的节点，不再是"切订阅二选一"
+  //   · 避免当前订阅的节点被算两遍（一遍 config.proxies、一遍 provider）
+  // 没有 provider 时退回老的单订阅模式：复用订阅自带的组。
+  const existingGroups = providerMode ? [] : (config["proxy-groups"] || []);
+  const nodeNames = providerMode
+    ? []
+    : (config.proxies || []).map(p => p && p.name).filter(Boolean);
+  if (providerMode) config.proxies = [];
+
   const takenNames = new Set(existingGroups.map(g => g && g.name).filter(Boolean));
 
-  // 订阅里的全部节点名；用 proxy-providers 的订阅这里可能是空的，靠下面的 use 兜底
-  const nodeNames = (config.proxies || []).map(p => p && p.name).filter(Boolean);
-  const providerNames = Object.keys(config["proxy-providers"] || {});
+  // 主组：provider 模式下订阅的组已经全丢了，自己建一个；否则按候选名单
+  // 探测订阅自带的主组（不同机场叫法不一样，写死名字换订阅就会炸：兜底
+  // 规则 MATCH 指向不存在的组时 mihomo 会拒绝整份配置）。
+  const MAIN_GROUP = providerMode
+    ? "Proxy"
+    : (MAIN_GROUP_CANDIDATES.find(n => takenNames.has(n)) ||
+       (existingGroups.find(
+         g => g && g.type === "select" && Array.isArray(g.proxies) && g.proxies.length
+       ) || {}).name ||
+       null);
+  const hasMainGroup = Boolean(MAIN_GROUP);
+  if (providerMode) takenNames.add(MAIN_GROUP);
 
-  // 主组不存在就不往选项里放，避免生成一个指向空气的策略导致配置加载失败
-  const hasMainGroup = takenNames.has(MAIN_GROUP);
-
-  // 订阅原有的组（Proxy、Auto 等）目前节点是写死的名单。这里统一给它们
-  // 补上 use，以后新增机场只要注册成 proxy-providers，这些组（含 Auto
-  // 自动测速）会自动把新机场节点纳入，不用逐个组手动改。
-  if (providerNames.length) {
+  // 单订阅模式下才需要动订阅自带的组：标 hidden + 给 Auto 滤掉高倍率节点。
+  // provider 模式下这些组已经不存在了，对应的能力由下面 AUTO_GROUPS 重建。
+  if (!providerMode) {
     for (const g of existingGroups) {
-      if (!g || !g.proxies) continue;
-      g.use = Array.from(new Set([...(g.use || []), ...providerNames]));
+      if (g && HIDDEN_GROUPS.includes(g.name)) g.hidden = true;
+    }
+    const autoGroupObj = existingGroups.find(g => g && g.name === "Auto");
+    if (autoGroupObj && Array.isArray(autoGroupObj.proxies)) {
+      // 筛不出节点就保留原列表，不清空 —— 空组会让整份配置被拒绝
+      const filtered = autoGroupObj.proxies.filter(
+        n => !new RegExp(HIGH_RATIO_EXCLUDE).test(n)
+      );
+      if (filtered.length) autoGroupObj.proxies = filtered;
     }
   }
 
-  // 按 HIDDEN_GROUPS 名单把订阅原有的组标记为 hidden，不影响功能，
-  // 只是尝试不让它单独出现在首页
-  for (const g of existingGroups) {
-    if (g && HIDDEN_GROUPS.includes(g.name)) g.hidden = true;
-  }
+  // 自动测速子组（Auto / 低倍率 / 分国家）。先建好，好把组名塞进下面所有
+  // 首页可见组的选项列表里当备选项。
+  const autoGroups = [];
+  const autoResolvedNames = [];
 
-  // 订阅自带的 "Auto" 组：过滤掉流量倍率 >1 的节点，只在性价比更高的
-  // 节点里自动测速，避免它自动选到消耗流量更贵的节点
-  const autoGroupObj = existingGroups.find(g => g && g.name === "Auto");
-  if (autoGroupObj && Array.isArray(autoGroupObj.proxies)) {
-    autoGroupObj.proxies = autoGroupObj.proxies.filter(n => /流量倍率:(0\.\d+|1)$/.test(n));
-  }
+  for (const spec of AUTO_GROUPS) {
+    // providerOnly 的组在单订阅模式下跳过（那时订阅自带 Auto，不用重复建）
+    if (spec.providerOnly && !providerMode) continue;
 
-  // 按流量倍率筛选的自动测速子组：url-test + filter，hidden 不占首页位置。
-  // 提前建好，好把组名塞进下面所有首页可见组的选项列表里当备选项。
-  const lowRatioGroups = [];
-  const lowRatioResolvedNames = [];
-
-  for (const lr of LOW_RATIO_GROUPS) {
-    let name = lr.name;
+    let name = spec.name;
     for (let i = 2; takenNames.has(name); i++) {
-      name = `${lr.name}-${i}`;
+      name = `${spec.name}-${i}`;
     }
+
+    const group = buildAutoGroup(name, spec, providerNames, nodeNames);
+    if (!group) continue; // 单订阅模式下筛不出节点，跳过不建空组
+
     takenNames.add(name);
-    lowRatioResolvedNames.push(name);
-
-    // mihomo 的 filter 只对 use（proxy-providers）拉进来的节点生效，对
-    // 写死在 proxies 里的节点不起作用，所以这里先用同一条正则在 JS 里
-    // 把 nodeNames 过滤一遍，避免不符合条件的节点也被塞进候选池
-    const matched = nodeNames.filter(n => new RegExp(lr.filter).test(n));
-
-    const group = {
-      "name": name,
-      "type": "url-test",
-      "url": "http://www.gstatic.com/generate_204",
-      "interval": 300,
-      "tolerance": 50,
-      "filter": lr.filter, // 留着给未来的 proxy-providers 节点用
-      "hidden": true,
-      "proxies": matched
-    };
-    if (providerNames.length) group["use"] = providerNames;
-    lowRatioGroups.push(group);
+    autoResolvedNames.push(name);
+    autoGroups.push(group);
   }
 
-  // 塞进 Proxy 的选项列表（跟在 Auto 后面）；找不到 Proxy 就跳过，避免
-  // 生成指向空气的引用
-  if (hasMainGroup) {
+  // provider 模式：主组自己建，选项 = 各自动测速组 + DIRECT + 全部节点(use)
+  // 单订阅模式：把子组名插进订阅自带主组的选项列表里
+  const createdMainGroups = [];
+  if (providerMode) {
+    createdMainGroups.push({
+      "name": MAIN_GROUP,
+      "type": "select",
+      "proxies": [...autoResolvedNames, "DIRECT"],
+      "use": providerNames
+    });
+
+    // 全局模式用的 GLOBAL 组。mihomo 内置的 GLOBAL 是拿顶层 proxies 生成的，
+    // 而 provider 模式下顶层 proxies 是空的（节点都在 provider 里），内置
+    // GLOBAL 就只剩 DIRECT 和几个策略组，全局模式下选不到任何单个节点。
+    // 显式定义一个同名组可以整个覆盖掉内置的（已实测：覆盖生效，且能通过
+    // use 拿到 provider 的全部节点）。
+    createdMainGroups.push({
+      "name": "GLOBAL",
+      "type": "select",
+      "proxies": [MAIN_GROUP, ...autoResolvedNames, "DIRECT"],
+      "use": providerNames
+    });
+    takenNames.add("GLOBAL"); // 后面建站点/规则集组时别撞名
+  } else if (hasMainGroup && autoResolvedNames.length) {
     const mainGroupObj = existingGroups.find(g => g && g.name === MAIN_GROUP);
-    const autoIndex = mainGroupObj.proxies.indexOf("Auto");
-    const insertAt = autoIndex === -1 ? 0 : autoIndex + 1;
-    mainGroupObj.proxies.splice(insertAt, 0, ...lowRatioResolvedNames);
+    if (mainGroupObj && Array.isArray(mainGroupObj.proxies)) {
+      const autoIndex = mainGroupObj.proxies.indexOf("Auto");
+      const insertAt = autoIndex === -1 ? 0 : autoIndex + 1;
+      mainGroupObj.proxies.splice(insertAt, 0, ...autoResolvedNames);
+    }
   }
 
   const newGroups = [];
@@ -287,7 +406,7 @@ function main(config) {
     // 选项里的第一项就是默认选中项：默认跟随主组
     const options = [];
     if (hasMainGroup) options.push(MAIN_GROUP);
-    options.push(...lowRatioResolvedNames, "DIRECT", ...nodeNames);
+    options.push(...autoResolvedNames, "DIRECT", ...nodeNames);
 
     const group = { "name": name, "type": "select", "proxies": options };
     if (providerNames.length) group["use"] = providerNames;
@@ -309,14 +428,21 @@ function main(config) {
 
     const options = [];
     if (hasMainGroup) options.push(MAIN_GROUP);
-    options.push(...lowRatioResolvedNames, "DIRECT", ...nodeNames);
+    options.push(...autoResolvedNames, "DIRECT", ...nodeNames);
 
     const group = { "name": name, "type": "select", "proxies": options };
     if (providerNames.length) group["use"] = providerNames;
     providerGroups.push(group);
   }
 
-  config["proxy-groups"] = [...existingGroups, ...newGroups, ...providerGroups, ...lowRatioGroups];
+  // 顺序即首页展示顺序：主组打头，自动测速子组是 hidden 的放最后
+  config["proxy-groups"] = [
+    ...existingGroups,
+    ...createdMainGroups,
+    ...newGroups,
+    ...providerGroups,
+    ...autoGroups
+  ];
 
   // 把 PROVIDER_GROUPS 和 FIXED_RULE_SETS 都声明成 rule-providers，
   // mihomo 按 interval 在后台自动刷新，不需要这个脚本重跑
@@ -352,9 +478,10 @@ function main(config) {
 
   // PROVIDER_GROUPS 对应的分流规则；必须排在第 6 步的 GEOIP,CN,DIRECT 之前，
   // 否则国内规则集（如国内AI）会先被 GEOIP 命中直连，组形同虚设选不了节点
-  const providerRules = PROVIDER_GROUPS.map(
-    (rs, i) => `RULE-SET,${rs.provider},${providerResolvedNames[i]}`
-  );
+  const providerRules = PROVIDER_GROUPS.flatMap((rs, i) => [
+    `RULE-SET,${rs.provider},${providerResolvedNames[i]}`,
+    ...(rs.extraMatchers || []).map(m => `${m},${providerResolvedNames[i]}`)
+  ]);
 
   // ------------------------------------------------------------
   // 3. 固定策略规则集（广告拒绝、Apple 直连），排在最前面优先生效
@@ -399,9 +526,11 @@ function main(config) {
 
   // ------------------------------------------------------------
   // 6. 兜底规则 (MATCH 必须放在最后)
+  //    主组没解析出来时退回 DIRECT —— 只是保证配置能加载，这种情况下
+  //    未命中的流量会全部直连（不走代理），属于异常兜底，正常不会走到
   // ------------------------------------------------------------
   const catchAllRule = [
-    `MATCH,${MAIN_GROUP}`
+    `MATCH,${hasMainGroup ? MAIN_GROUP : "DIRECT"}`
   ];
 
   // ------------------------------------------------------------

@@ -103,19 +103,45 @@ const HIDDEN_GROUPS = ["Auto"];
 // （没有倍率标记的节点天然不会被排除掉），而不是写进 filter 里。
 const HIGH_RATIO_EXCLUDE = "流量倍率:(1\\.\\d+|[2-9])"; // 1.x / 2~9 倍，性价比低
 
+// 分国家的组用「中文名 | 双字母及其三字母变体 | 英文全称 | 国旗 emoji」四选一，
+// 尽量覆盖各家机场的命名习惯。(?i) 是忽略大小写（us / US / Us 都认）。
+//
+// ⚠️ 双字母代号必须用 \b 包住，否则会误伤：US 会命中 RUS(俄罗斯) / AUS(澳大利亚)。
+//   \bUSA?\b 的含义是「US 或 USA，且前后都是非单词字符」，
+//   RUS 里的 US 前面紧挨着 R（单词字符），不构成边界，不会被匹配。
+// 已用两家机场的真实节点名验证过，没有串组。
+const CC = {
+  us: "(?i)(美国|\\bUSA?\\b|United ?States|🇺🇸)",
+  jp: "(?i)(日本|\\bJPN?\\b|Japan|🇯🇵)",
+  hk: "(?i)(香港|\\bHKG?\\b|Hong ?Kong|🇭🇰)",
+  sg: "(?i)(新加坡|狮城|\\bSGP?\\b|Singapore|🇸🇬)",
+  tw: "(?i)(台湾|台北|\\bTWN?\\b|Taiwan|🇹🇼)",
+  kr: "(?i)(韩国|首尔|\\bKOR?\\b|Korea|🇰🇷)",
+  gb: "(?i)(英国|伦敦|\\b(UK|GBR?)\\b|United ?Kingdom|Britain|🇬🇧)",
+  de: "(?i)(德国|\\bDEU?\\b|Germany|🇩🇪)",
+  nl: "(?i)(荷兰|\\bNLD?\\b|Netherlands|🇳🇱)"
+};
+
 const AUTO_GROUPS = [
   // 全部节点里自动选最快的（排除高倍率）。订阅自带的 Auto 在 provider
-  // 模式下已经被丢弃，所以这里自己建一个同名的。
-  { name: "Auto", filter: "", exclude: HIGH_RATIO_EXCLUDE, providerOnly: true },
+  // 模式下已经被丢弃，所以这里自己建一个。
+  { name: "⚡ Auto", filter: "", exclude: HIGH_RATIO_EXCLUDE, providerOnly: true },
 
-  // 严格低于 1 倍。只有 TrojanFlare 的节点带倍率标记，ImmTelecom 没有
-  // 倍率信息，所以这个组实际只会选到 TrojanFlare 的节点。
-  { name: "Auto 低倍率", filter: "流量倍率:0\\.", exclude: "" },
+  // 低倍率：认「名字里同时有『倍率』和『0.』」的节点，两种词序都兼容
+  // （流量倍率:0.6 / 0.5倍率）。没写倍率的机场匹配不到，这个组会是空的。
+  { name: "💰 低倍率", filter: "(倍率.*0\\.|0\\..*倍率)", exclude: "" },
 
-  // 分国家 + 排除高倍率
-  { name: "美国", filter: "(美国|USA)", exclude: HIGH_RATIO_EXCLUDE },
-  { name: "荷兰", filter: "(荷兰|NLD)", exclude: HIGH_RATIO_EXCLUDE },
-  { name: "日本", filter: "(日本|JPN)", exclude: HIGH_RATIO_EXCLUDE }
+  // 分国家/地区。按用户要求不再叠加倍率筛选 —— 想要低倍率就选上面那个组。
+  // 组名带上大写的国家代号，和节点名里的缩写对得上，一眼能看出这组在筛什么。
+  { name: "🇺🇸 US 美国",   filter: CC.us, exclude: "" },
+  { name: "🇯🇵 JP 日本",   filter: CC.jp, exclude: "" },
+  { name: "🇭🇰 HK 香港",   filter: CC.hk, exclude: "" },
+  { name: "🇸🇬 SG 新加坡", filter: CC.sg, exclude: "" },
+  { name: "🇹🇼 TW 台湾",   filter: CC.tw, exclude: "" },
+  { name: "🇰🇷 KR 韩国",   filter: CC.kr, exclude: "" },
+  { name: "🇬🇧 UK 英国",   filter: CC.gb, exclude: "" },
+  { name: "🇩🇪 DE 德国",   filter: CC.de, exclude: "" },
+  { name: "🇳🇱 NL 荷兰",   filter: CC.nl, exclude: "" }
 ];
 
 // —— 需要独立选节点的规则集（各建一个 select 组）——
@@ -259,6 +285,15 @@ const dnsConfig = {
 // 单订阅模式：mihomo 的 filter 对写死在 proxies 里的节点**不生效**，只能
 //   在这里先用同样的正则把节点名过滤一遍；筛不出节点就返回 null 不建这个组
 //   （既没有 use 又是空 proxies 的组会让 mihomo 拒绝整份配置）。
+// 把 filter 正则编译成 JS 的 RegExp。
+// mihomo 用的是 Go RE2，支持 (?i) 这种内联标志；JS 的 RegExp 不认，直接
+// new RegExp("(?i)…") 会抛 SyntaxError 让整个脚本挂掉。单订阅模式要在 JS
+// 里自己过滤节点，所以这里把 (?i) 前缀转成 JS 的 i 标志。
+function toJsRegExp(pattern) {
+  if (pattern.indexOf("(?i)") === 0) return new RegExp(pattern.slice(4), "i");
+  return new RegExp(pattern);
+}
+
 function buildAutoGroup(name, spec, providerNames, nodeNames) {
   const group = {
     "name": name,
@@ -277,8 +312,8 @@ function buildAutoGroup(name, spec, providerNames, nodeNames) {
   }
 
   let matched = nodeNames;
-  if (spec.filter) matched = matched.filter(n => new RegExp(spec.filter).test(n));
-  if (spec.exclude) matched = matched.filter(n => !new RegExp(spec.exclude).test(n));
+  if (spec.filter) matched = matched.filter(n => toJsRegExp(spec.filter).test(n));
+  if (spec.exclude) matched = matched.filter(n => !toJsRegExp(spec.exclude).test(n));
   if (!matched.length) return null;
   group["proxies"] = matched;
   return group;

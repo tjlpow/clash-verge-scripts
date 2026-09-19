@@ -81,6 +81,20 @@ const SITE_GROUPS = [
   {
     name: "X",
     matchers: ["GEOSITE,twitter"]            // x.com / twitter.com / t.co
+  },
+  {
+    // Google 搜索、AI Mode 及关联资源独立选节点；Gemini 等海外 AI 服务
+    // 仍由下方 ai-global 规则集优先分流到「国外AI」。YouTube 的规则排在
+    // 这里前面，所以不会被 google.com 的域名规则抢走。
+    name: "Google",
+    afterProviderRules: true,
+    matchers: [
+      "DOMAIN-SUFFIX,google.com",
+      "DOMAIN-SUFFIX,google.com.hk",
+      "DOMAIN-SUFFIX,google.co.jp",
+      "DOMAIN-SUFFIX,gstatic.com",
+      "DOMAIN-SUFFIX,googleusercontent.com"
+    ]
   }
 ];
 
@@ -167,32 +181,7 @@ const PROVIDER_GROUPS = [
   {
     name: "国外AI",
     provider: "ai-global",
-    url: "https://cdn.jsdelivr.net/gh/VPSDance/ai-proxy-rules@main/rules/clash/global.yaml",
-
-    // extraMatchers：规则集之外再补的规则，指向同一个组。规则集本身照常
-    // 从上游自动更新，这几条只是叠加上去。
-    //
-    // 为什么要补 —— Google 搜索里的 AI mode 不是独立域名，走的就是搜索
-    // 本体 www.google.com，ai-proxy-rules 里没有，不补的话会落到最后的
-    // MATCH 用主组的出口 IP。而 AI mode 能不能用只看 Google 在搜索会话
-    // 里看到的 IP 干不干净（旧机场的 IP 被 Google 判成国内，用不了；新
-    // 机场的可以），所以搜索本体必须跟 gemini 走同一个组、同一个出口。
-    // 2026-08-17 实测分流：
-    //   gemini.google.com → RuleSet(ai-global) → 国外AI ✅
-    //   www.google.com    → Match()            → Proxy ❌ 就是这里漏了
-    //
-    // DOMAIN-SUFFIX,google.com 一条就覆盖了 www / *.clients6（AI mode 用到的
-    // appsgenaiserver-pa、waa-pa 都在这下面）/ play / docs 等全部子域。
-    // 副作用：Gmail、Docs、Play 这些也会跟着走国外AI组 —— 这其实是好事，
-    // 同一个 Google 账号的流量走同一个出口，不容易被判成异常会话。
-    // YouTube 不受影响，GEOSITE,youtube 规则排在这些之前，仍走自己的组。
-    extraMatchers: [
-      "DOMAIN-SUFFIX,google.com",
-      "DOMAIN-SUFFIX,google.com.hk",
-      "DOMAIN-SUFFIX,google.co.jp",
-      "DOMAIN-SUFFIX,gstatic.com",          // fonts.gstatic.com 等搜索页静态资源
-      "DOMAIN-SUFFIX,googleusercontent.com" // 搜索结果里的图片、头像
-    ]
+    url: "https://cdn.jsdelivr.net/gh/VPSDance/ai-proxy-rules@main/rules/clash/global.yaml"
   },
   {
     name: "国内AI",
@@ -508,7 +497,16 @@ function main(config) {
   // 2. 站点独立分组的分流规则
   // ------------------------------------------------------------
   const siteRules = SITE_GROUPS.flatMap(
-    (site, i) => site.matchers.map(m => `${m},${resolvedNames[i]}`)
+    (site, i) => site.afterProviderRules
+      ? []
+      : site.matchers.map(m => `${m},${resolvedNames[i]}`)
+  );
+  // google.com 同时覆盖 gemini.google.com；把 Google 域名规则放在
+  // ai-global 之后，才能继续让 Gemini 等 AI 域名优先走「国外AI」。
+  const deferredSiteRules = SITE_GROUPS.flatMap(
+    (site, i) => site.afterProviderRules
+      ? site.matchers.map(m => `${m},${resolvedNames[i]}`)
+      : []
   );
 
   // PROVIDER_GROUPS 对应的分流规则；必须排在第 6 步的 GEOIP,CN,DIRECT 之前，
@@ -570,14 +568,16 @@ function main(config) {
 
   // ------------------------------------------------------------
   // 7. 合并规则，覆盖订阅原有的规则列表
-  //    顺序：固定策略(广告/Apple) > 本地域名 > 站点独立组 > 规则集组
-  //         (AI/Telegram/iCloud) > 直连白名单 > 兜底
+  //    顺序：固定策略(广告/Apple) > 本地域名 > YouTube/X > 规则集组
+  //         (AI/Telegram/iCloud) > Google > 直连白名单 > 兜底。Google 放在
+  //         AI 规则集之后，确保 gemini.google.com 仍优先归入「国外AI」。
   // ------------------------------------------------------------
   config.rules = [
     ...fixedRules,
     ...localRules,
     ...siteRules,
     ...providerRules,
+    ...deferredSiteRules,
     ...whitelistRules,
     ...catchAllRule
   ];

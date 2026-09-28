@@ -218,23 +218,22 @@ const FIXED_RULE_SETS = [
 ];
 
 // —— 防 DNS 泄漏配置 ——
-// fake-ip + respect-rules：DNS 查询也按分流规则走，国内域名用国内 DoH
-// 直连解析，国外域名走代理 DoH 解析。需配合 TUN 模式才彻底生效。
+// 普通网站域名统一经主代理组查询海外 DoH；国内 DNS 仅用于代理节点域名
+// 的连接引导。Clash Verge 中须关闭「DNS 覆写」，否则设置页会接管这些字段。
+// 配合 TUN 的 DNS 劫持，才能覆盖没有使用系统代理的应用。
 const domesticNameservers = [
   "https://223.5.5.5/dns-query", // 阿里 DoH
   "https://doh.pub/dns-query"    // 腾讯 DoH
 ];
 
 const foreignNameservers = [
-  "https://208.67.222.222/dns-query", // OpenDNS
-  "https://77.88.8.8/dns-query",      // Yandex DNS
-  "https://1.1.1.1/dns-query",        // Cloudflare DNS
-  "https://8.8.4.4/dns-query"         // Google DNS
+  "https://1.1.1.1/dns-query", // Cloudflare DNS
+  "https://8.8.8.8/dns-query"  // Google DNS
 ];
 
 const dnsConfig = {
   "enable": true,
-  "listen": "127.0.0.1:1053", // 仅本机；要共享给局域网设备才改 0.0.0.0:1053
+  "listen": "127.0.0.1:53",
   "ipv6": false,
   "prefer-h3": false,
   "respect-rules": true,
@@ -257,13 +256,13 @@ const dnsConfig = {
     "pool.ntp.org",
     "localhost.work.weixin.qq.com"
   ],
-  "default-nameserver": ["223.5.5.5", "1.2.4.8"],
-  "nameserver": [...foreignNameservers],
+  "default-nameserver": ["1.1.1.1", "8.8.8.8"],
+  "nameserver": [], // 在 main() 中绑定实际存在的主代理组
   "proxy-server-nameserver": [...domesticNameservers],
-  "direct-nameserver": [...domesticNameservers],
+  "direct-nameserver": [],
   "nameserver-policy": {
-    // 逗号键合法，mihomo 会展开成 geosite:private 与 geosite:cn 两条
-    "geosite:private,cn": domesticNameservers
+    // 局域网域名仍由系统 DNS 解析，避免路由器等本地名称失效。
+    "geosite:private": "system"
   }
 };
 
@@ -582,8 +581,14 @@ function main(config) {
     ...catchAllRule
   ];
 
-  // 8. 覆盖 DNS 配置
-  config.dns = dnsConfig;
+  // 8. 海外 DoH 固定经主代理组，节点域名则由 proxy-server-nameserver
+  //    引导解析。单订阅模式主组名称可能不同，所以在此处动态绑定。
+  const dnsProxy = hasMainGroup ? `#${MAIN_GROUP}` : "";
+  config.dns = {
+    ...dnsConfig,
+    "nameserver": foreignNameservers.map(server => `${server}${dnsProxy}`),
+    "direct-nameserver": foreignNameservers.map(server => `${server}${dnsProxy}`)
+  };
 
   return config;
 }

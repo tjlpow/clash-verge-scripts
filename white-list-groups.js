@@ -36,7 +36,7 @@
 // ============================================================
 // Clash Verge 外部脚本
 //   白名单直连 + 防 DNS 泄漏 + 广告拦截
-//   + YouTube / X / 国外AI / 国内AI / Telegram / iCloud 独立策略组
+//   + YouTube / X / bilibili / 国外AI / 国内AI / Telegram / iCloud 独立策略组
 //   + Auto / 低倍率 / 分国家 自动测速子组（hidden，只做备选项）
 //
 // ▍两种运行模式，看有没有 proxy-providers 自动切换：
@@ -73,6 +73,7 @@ const MAIN_GROUP_CANDIDATES = [
 // —— 需要独立选节点的站点 ——
 // name     : 生成的策略组名，会出现在「代理」页里
 // matchers : 匹配规则，策略由脚本自动补上组名
+// defaultPolicy: 首次创建时排在第一位的选项；省略则跟随主组
 const SITE_GROUPS = [
   {
     name: "YouTube",
@@ -81,6 +82,34 @@ const SITE_GROUPS = [
   {
     name: "X",
     matchers: ["GEOSITE,twitter"]            // x.com / twitter.com / t.co
+  },
+  {
+    // 参考 BilibiliHMT 的域名范围，并补上游戏域名与常见视频 CDN；默认直连，
+    // 在「代理」页可改选 Proxy、自动组或任意节点。避免照搬其 IP 规则，
+    // 以免公用 IP 或将来变更的地址误伤其他服务。
+    name: "bilibili",
+    defaultPolicy: "DIRECT",
+    matchers: [
+      "DOMAIN-SUFFIX,bilibili.com",
+      "DOMAIN-SUFFIX,bilibili.tv",
+      "DOMAIN-SUFFIX,bilibiligame.cn",
+      "DOMAIN-SUFFIX,bilibiligame.co",
+      "DOMAIN-SUFFIX,bilibiligame.net",
+      "DOMAIN-SUFFIX,biligame.co",
+      "DOMAIN-SUFFIX,biligame.com",
+      "DOMAIN-SUFFIX,biligame.net",
+      "DOMAIN-SUFFIX,acgvideo.com",
+      "DOMAIN-SUFFIX,biliapi.net",
+      "DOMAIN-SUFFIX,biliimg.com",
+      "DOMAIN-SUFFIX,bilivideo.com",
+      "DOMAIN-SUFFIX,hdslb.com",
+      "DOMAIN-SUFFIX,b23.tv",
+      "DOMAIN,p-bstarstatic.akamaized.net",
+      "DOMAIN,p.bstarstatic.com",
+      "DOMAIN,upos-bstar-mirrorakam.akamaized.net",
+      "DOMAIN,upos-bstar1-mirrorakam.akamaized.net",
+      "DOMAIN,upos-hz-mirrorakam.akamaized.net"
+    ]
   },
   {
     // Google 搜索、AI Mode 及关联资源独立选节点；Gemini 等海外 AI 服务
@@ -426,10 +455,12 @@ function main(config) {
     takenNames.add(name);
     resolvedNames.push(name);
 
-    // 选项里的第一项就是默认选中项：默认跟随主组
-    const options = [];
+    // 第一项是新组的默认选项：bilibili 默认直连，其余站点跟随主组。
+    const options = site.defaultPolicy === "DIRECT" ? ["DIRECT"] : [];
     if (hasMainGroup) options.push(MAIN_GROUP);
-    options.push(...autoResolvedNames, "DIRECT", ...nodeNames);
+    options.push(...autoResolvedNames);
+    if (site.defaultPolicy !== "DIRECT") options.push("DIRECT");
+    options.push(...nodeNames);
 
     const group = { "name": name, "type": "select", "proxies": options };
     if (providerNames.length) group["use"] = providerNames;
@@ -556,6 +587,14 @@ function main(config) {
     "GEOIP,CN,DIRECT"
   ];
 
+  // Claude Desktop 的 hCaptcha 等辅助请求不在 ai-global 规则集中，
+  // 原本会落到 MATCH 主组。只为 Claude Helper 进程补兜底，避免影响
+  // 其他应用的 hCaptcha，也保留前面域名规则的优先级。
+  const overseasAIIndex = PROVIDER_GROUPS.findIndex(rs => rs.name === "国外AI");
+  const claudeHelperRules = overseasAIIndex < 0 ? [] : [
+    `PROCESS-NAME,Claude Helper,${providerResolvedNames[overseasAIIndex]}`
+  ];
+
   // ------------------------------------------------------------
   // 6. 兜底规则 (MATCH 必须放在最后)
   //    主组没解析出来时退回 DIRECT —— 只是保证配置能加载，这种情况下
@@ -567,9 +606,9 @@ function main(config) {
 
   // ------------------------------------------------------------
   // 7. 合并规则，覆盖订阅原有的规则列表
-  //    顺序：固定策略(广告/Apple) > 本地域名 > YouTube/X > 规则集组
-  //         (AI/Telegram/iCloud) > Google > 直连白名单 > 兜底。Google 放在
-  //         AI 规则集之后，确保 gemini.google.com 仍优先归入「国外AI」。
+  //    顺序：固定策略(广告/Apple) > 本地域名 > YouTube/X/bilibili > 规则集组
+  //         (AI/Telegram/iCloud) > Google > 直连白名单 > Claude Helper > 兜底。
+  //    Google 放在 AI 规则集之后，确保 gemini.google.com 仍优先归入「国外AI」。
   // ------------------------------------------------------------
   config.rules = [
     ...fixedRules,
@@ -578,6 +617,7 @@ function main(config) {
     ...providerRules,
     ...deferredSiteRules,
     ...whitelistRules,
+    ...claudeHelperRules,
     ...catchAllRule
   ];
 

@@ -567,11 +567,11 @@ function main(config) {
     "DOMAIN-SUFFIX,baidu.com,DIRECT",
     "DOMAIN-SUFFIX,taobao.com,DIRECT",
     "DOMAIN-SUFFIX,csdn.net,DIRECT",
-    // 微信域名优先直连；不要把整个 qq.com 或腾讯 CDN 网段一并放行。
-    "DOMAIN-SUFFIX,weixin.qq.com,DIRECT",
-    "DOMAIN-SUFFIX,wx.qq.com,DIRECT",
-    "DOMAIN-SUFFIX,wxqcloud.qq.com,DIRECT",
-    "DOMAIN,wx.mail.qq.com,DIRECT",
+    // 这些服务可能解析到境外 CDN IP；按域名直连，不扩大到共享 IP 网段。
+    // qq.com 也覆盖此前单列的微信域名，纯 IP 的微信连接仍由进程规则处理。
+    "DOMAIN-SUFFIX,qq.com,DIRECT",
+    "DOMAIN-SUFFIX,codebuddy.cn,DIRECT",
+    "DOMAIN-SUFFIX,workbuddy.cn,DIRECT",
 
     // —— IP 层 ——
     // ⚠️ 不要改用 GEOSITE,cn 做国内判断：该分类混有 browserleaks / whoer /

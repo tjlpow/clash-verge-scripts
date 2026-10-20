@@ -567,6 +567,11 @@ function main(config) {
     "DOMAIN-SUFFIX,baidu.com,DIRECT",
     "DOMAIN-SUFFIX,taobao.com,DIRECT",
     "DOMAIN-SUFFIX,csdn.net,DIRECT",
+    // 微信域名优先直连；不要把整个 qq.com 或腾讯 CDN 网段一并放行。
+    "DOMAIN-SUFFIX,weixin.qq.com,DIRECT",
+    "DOMAIN-SUFFIX,wx.qq.com,DIRECT",
+    "DOMAIN-SUFFIX,wxqcloud.qq.com,DIRECT",
+    "DOMAIN,wx.mail.qq.com,DIRECT",
 
     // —— IP 层 ——
     // ⚠️ 不要改用 GEOSITE,cn 做国内判断：该分类混有 browserleaks / whoer /
@@ -585,6 +590,13 @@ function main(config) {
 
     // 国内 IP。不加 no-resolve —— 需对带域名的连接解析后再判断归属
     "GEOIP,CN,DIRECT"
+  ];
+
+  // 微信桌面端还会直接连接腾讯的海外 CDN IP（没有可供域名规则匹配的主机名，
+  // 且不会命中 GEOIP,CN）。按进程直连可覆盖这些连接，又不影响其他应用。
+  const wechatRules = [
+    "PROCESS-NAME,WeChat,DIRECT",
+    "PROCESS-NAME,WeChatAppEx Helper,DIRECT"
   ];
 
   // Claude Desktop 的 hCaptcha 等辅助请求不在 ai-global 规则集中，
@@ -607,7 +619,7 @@ function main(config) {
   // ------------------------------------------------------------
   // 7. 合并规则，覆盖订阅原有的规则列表
   //    顺序：固定策略(广告/Apple) > 本地域名 > YouTube/X/bilibili > 规则集组
-  //         (AI/Telegram/iCloud) > Google > 直连白名单 > Claude Helper > 兜底。
+  //         (AI/Telegram/iCloud) > Google > 直连白名单 > 微信进程 > Claude Helper > 兜底。
   //    Google 放在 AI 规则集之后，确保 gemini.google.com 仍优先归入「国外AI」。
   // ------------------------------------------------------------
   config.rules = [
@@ -617,6 +629,7 @@ function main(config) {
     ...providerRules,
     ...deferredSiteRules,
     ...whitelistRules,
+    ...wechatRules,
     ...claudeHelperRules,
     ...catchAllRule
   ];

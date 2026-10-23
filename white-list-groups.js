@@ -247,8 +247,9 @@ const FIXED_RULE_SETS = [
 ];
 
 // —— 防 DNS 泄漏配置 ——
-// 普通网站域名统一经主代理组查询海外 DoH；国内 DNS 仅用于代理节点域名
-// 的连接引导。Clash Verge 中须关闭「DNS 覆写」，否则设置页会接管这些字段。
+// 普通网站域名统一经主代理组查询海外 DoH；直连的 b23.tv 使用国内 DoH
+// 获取国内 CDN 地址，国内 DNS 同时用于代理节点域名的连接引导。
+// Clash Verge 中须关闭「DNS 覆写」，否则设置页会接管这些字段。
 // 配合 TUN 的 DNS 劫持，才能覆盖没有使用系统代理的应用。
 const domesticNameservers = [
   "https://223.5.5.5/dns-query", // 阿里 DoH
@@ -289,9 +290,12 @@ const dnsConfig = {
   "nameserver": [], // 在 main() 中绑定实际存在的主代理组
   "proxy-server-nameserver": [...domesticNameservers],
   "direct-nameserver": [],
+  "direct-nameserver-follow-policy": true,
   "nameserver-policy": {
     // 局域网域名仍由系统 DNS 解析，避免路由器等本地名称失效。
-    "geosite:private": "system"
+    "geosite:private": "system",
+    // b23.tv 走 bilibili[DIRECT]；海外 CDN 地址在本地直连时会断开 TLS。
+    "+.b23.tv": [...domesticNameservers]
   }
 };
 

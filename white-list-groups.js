@@ -563,6 +563,16 @@ function main(config) {
     "GEOSITE,private,DIRECT"
   ];
 
+  // 小米官网、账号及 MiMo 官网、开放平台/API、桌面端、MiMo Code。
+  // 放在 AI 规则集之前，避免规则集更新后把这些域名改走代理。
+  const xiaomiDirectRules = [
+    "DOMAIN-SUFFIX,mi.com,DIRECT",
+    "DOMAIN-SUFFIX,xiaomi.com,DIRECT",
+    "DOMAIN-SUFFIX,xiaomimimo.com,DIRECT",
+    "DOMAIN-SUFFIX,miui.com,DIRECT",
+    "DOMAIN-SUFFIX,miwifi.com,DIRECT"
+  ];
+
   // ------------------------------------------------------------
   // 5. 直连白名单
   // ------------------------------------------------------------
@@ -622,13 +632,14 @@ function main(config) {
 
   // ------------------------------------------------------------
   // 7. 合并规则，覆盖订阅原有的规则列表
-  //    顺序：固定策略(广告/Apple) > 本地域名 > YouTube/X/bilibili > 规则集组
+  //    顺序：固定策略(广告/Apple) > 本地域名 > 小米直连 > YouTube/X/bilibili > 规则集组
   //         (AI/Telegram/iCloud) > Google > 直连白名单 > 微信进程 > Claude Helper > 兜底。
   //    Google 放在 AI 规则集之后，确保 gemini.google.com 仍优先归入「国外AI」。
   // ------------------------------------------------------------
   config.rules = [
     ...fixedRules,
     ...localRules,
+    ...xiaomiDirectRules,
     ...siteRules,
     ...providerRules,
     ...deferredSiteRules,

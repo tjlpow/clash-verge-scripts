@@ -24,7 +24,7 @@
 //
 //   （SHA 是并发保护：远程有更新时会 409 冲突，重新取 SHA 再推即可）
 //
-// ▍改完在 Clash Verge 里重载配置才生效。
+// ▍保存本文件后自动生效，无需重启、切换配置或手动激活。
 //
 // ⚠️ 改动前先关掉 Clash Verge 自带的脚本编辑器窗口 ——
 //    在它里面点保存会覆盖掉磁盘上的改动。
@@ -35,7 +35,7 @@
 
 // ============================================================
 // Clash Verge 外部脚本
-//   白名单直连 + 防 DNS 泄漏 + 广告拦截
+//   国内规则集自动更新 + 直连补充 + 防 DNS 泄漏 + 广告拦截
 //   + YouTube / X / bilibili / 国外AI / 国内AI / Telegram / iCloud 独立策略组
 //   + Auto / 低倍率 / 分国家 自动测速子组（hidden，只做备选项）
 //
@@ -52,8 +52,8 @@
 //   单订阅模式（没有 proxy-providers 时的退路）——
 //     复用订阅自带的策略组，只做增补。
 //
-// 各组均为 select，默认选中主组；在 Clash Verge「代理」页手动切换后
-// 才会分流到不同节点。
+// 服务策略组可在 Clash Verge「代理」页选择节点；bilibili 默认直连，
+// 其他服务默认跟随主代理组。
 //
 // 各项配置的取舍理由记在提交历史里，不在本文件重复：
 //   https://github.com/tjlpow/clash-verge-scripts/commits/main/white-list-groups.js
@@ -191,7 +191,7 @@ const AUTO_GROUPS = [
 // name     : 生成的策略组名
 // provider : rule-provider 的 key
 // url      : 规则源地址
-// behavior : classical(域名/混合规则，默认) 或 ipcidr(纯 CIDR 列表)
+// behavior : classical(带规则类型，默认) / domain(纯域名) / ipcidr(纯 CIDR)
 //
 // 来源：
 //   AI 服务    https://github.com/VPSDance/ai-proxy-rules（main 分支）
@@ -199,8 +199,7 @@ const AUTO_GROUPS = [
 //     （release 分支才是每日自动构建的产物，master/main 只有生成源码，
 //      千万别指错分支，否则拿到的东西不会自动更新）
 // 都是 rule-provider，按 interval 自动刷新，不需要这个脚本重跑。
-// 国内AI组的域名解析到国内 IP 时会先被第 6 步的 GEOIP,CN,DIRECT 命中，
-// 所以下面这些规则都必须排在它前面，否则对应的组形同虚设选不了节点。
+// 域名规则先于国内通用规则，保留独立策略；纯 IP 规则在域名匹配后处理。
 //
 // 默认用 cdn.jsdelivr.net（2026-08-14 测过能连，最快）。mihomo 不支持
 // 一个 url 填多个地址自动轮询，连不上时手动把下面 url 里的域名换成：
@@ -226,7 +225,8 @@ const PROVIDER_GROUPS = [
   {
     name: "iCloud",
     provider: "icloud",
-    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/icloud.txt"
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/icloud.txt",
+    behavior: "domain"
   }
 ];
 
@@ -237,18 +237,46 @@ const FIXED_RULE_SETS = [
   {
     provider: "apple",
     url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/apple.txt",
+    behavior: "domain",
     policy: "DIRECT"
   },
   {
     provider: "ad-reject",
     url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/reject.txt",
+    behavior: "domain",
     policy: "REJECT"
   }
 ];
 
+// —— 国内服务直连规则集 ——
+// 放在服务专属规则之后、IP 规则之前，不建立额外策略组。
+// MetaCubeX CN 来自 ChinaMax_Domain，无需重复加载整个 ChinaMax。
+// SukkaW Domestic 补充常用服务，包含 DOMAIN-WILDCARD，使用 classical/text。
+const DOMESTIC_RULE_SETS = [
+  {
+    provider: "cn-sukka",
+    url: "https://ruleset.skk.moe/Clash/non_ip/domestic.txt",
+    behavior: "classical",
+    format: "text",
+    interval: 43200
+  },
+  {
+    provider: "cn-meta",
+    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/cn.mrs",
+    behavior: "domain",
+    format: "mrs",
+    interval: 86400
+  }
+];
+
+// 出口检测网站固定跟随主代理组，优先于国内通用名单和应用直连规则。
+// MetaCubeX CN 当前收录 browserleaks.com；明确例外可防止上游分类改变出口。
+const PROXY_EXCEPTION_DOMAINS = ["browserleaks.com", "whoer.net", "ipinfo.io"];
+
 // —— 防 DNS 泄漏配置 ——
-// 普通网站域名统一经主代理组查询海外 DoH；直连的 b23.tv 使用国内 DoH
-// 获取国内 CDN 地址，国内 DNS 同时用于代理节点域名的连接引导。
+// 默认解析经主代理组查询海外 DoH；DIRECT 出口使用国内 DoH 获取本地 CDN。
+// 不按整个 CN 名单分配国内 DNS，避免覆盖 AI 等服务的代理策略。
+// 代理节点域名也由国内 DoH 引导解析。
 // Clash Verge 中须关闭「DNS 覆写」，否则设置页会接管这些字段。
 // 配合 TUN 的 DNS 劫持，才能覆盖没有使用系统代理的应用。
 const domesticNameservers = [
@@ -289,13 +317,12 @@ const dnsConfig = {
   "default-nameserver": ["1.1.1.1", "8.8.8.8"],
   "nameserver": [], // 在 main() 中绑定实际存在的主代理组
   "proxy-server-nameserver": [...domesticNameservers],
-  "direct-nameserver": [],
+  "direct-nameserver": domesticNameservers.map(server => `${server}#DIRECT`),
   "direct-nameserver-follow-policy": true,
   "nameserver-policy": {
     // 局域网域名仍由系统 DNS 解析，避免路由器等本地名称失效。
-    "geosite:private": "system",
-    // b23.tv 走 bilibili[DIRECT]；海外 CDN 地址在本地直连时会断开 TLS。
-    "+.b23.tv": [...domesticNameservers]
+    // 局域网之外由最终出口决定解析方式，bilibili 改选代理时也使用海外 DNS。
+    "geosite:private": "system"
   }
 };
 
@@ -502,27 +529,20 @@ function main(config) {
     ...autoGroups
   ];
 
-  // 把 PROVIDER_GROUPS 和 FIXED_RULE_SETS 都声明成 rule-providers，
-  // mihomo 按 interval 在后台自动刷新，不需要这个脚本重跑
+  // 声明规则集，按各自格式加载，并由 mihomo 按 interval 自动更新。
+  // 下载经主代理组，避免规则源连接受新加入的国内名单影响。
   const ruleProviders = {};
-  PROVIDER_GROUPS.forEach(rs => {
+  [...PROVIDER_GROUPS, ...FIXED_RULE_SETS, ...DOMESTIC_RULE_SETS].forEach(rs => {
+    const format = rs.format || "yaml";
+    const extension = format === "text" ? "txt" : format;
     ruleProviders[rs.provider] = {
       type: "http",
       behavior: rs.behavior || "classical",
-      format: "yaml",
+      format,
       url: rs.url,
-      path: `./rules/${rs.provider}.yaml`,
-      interval: 86400
-    };
-  });
-  FIXED_RULE_SETS.forEach(rs => {
-    ruleProviders[rs.provider] = {
-      type: "http",
-      behavior: rs.behavior || "classical",
-      format: "yaml",
-      url: rs.url,
-      path: `./rules/${rs.provider}.yaml`,
-      interval: 86400
+      path: `./rules/${rs.provider}.${extension}`,
+      interval: rs.interval || 86400,
+      proxy: hasMainGroup ? MAIN_GROUP : "DIRECT"
     };
   });
   config["rule-providers"] = { ...(config["rule-providers"] || {}), ...ruleProviders };
@@ -543,17 +563,29 @@ function main(config) {
       : []
   );
 
-  // PROVIDER_GROUPS 对应的分流规则；必须排在第 6 步的 GEOIP,CN,DIRECT 之前，
-  // 否则国内规则集（如国内AI）会先被 GEOIP 命中直连，组形同虚设选不了节点
-  const providerRules = PROVIDER_GROUPS.flatMap((rs, i) => [
+  // 域名规则保留服务专属策略；Telegram 等纯 IP 规则留到 IP 阶段，
+  // 避免未匹配国内域名前就触发解析。
+  const buildProviderRules = (rs, i) => [
     `RULE-SET,${rs.provider},${providerResolvedNames[i]}`,
     ...(rs.extraMatchers || []).map(m => `${m},${providerResolvedNames[i]}`)
-  ]);
+  ];
+  const providerRules = PROVIDER_GROUPS.flatMap((rs, i) =>
+    rs.behavior === "ipcidr" ? [] : buildProviderRules(rs, i)
+  );
+  const providerIPRules = PROVIDER_GROUPS.flatMap((rs, i) =>
+    rs.behavior === "ipcidr" ? buildProviderRules(rs, i) : []
+  );
 
   // ------------------------------------------------------------
-  // 3. 固定策略规则集（广告拒绝、Apple 直连），排在最前面优先生效
+  // 3. 广告优先拦截，Apple 保留固定直连策略
   // ------------------------------------------------------------
-  const fixedRules = FIXED_RULE_SETS.map(rs => `RULE-SET,${rs.provider},${rs.policy}`);
+  const rejectRules = FIXED_RULE_SETS.filter(rs => rs.policy === "REJECT")
+    .map(rs => `RULE-SET,${rs.provider},${rs.policy}`);
+  const fixedRules = FIXED_RULE_SETS.filter(rs => rs.policy !== "REJECT")
+    .map(rs => `RULE-SET,${rs.provider},${rs.policy}`);
+  const proxyExceptionRules = hasMainGroup
+    ? PROXY_EXCEPTION_DOMAINS.map(domain => `DOMAIN-SUFFIX,${domain},${MAIN_GROUP}`)
+    : [];
 
   // ------------------------------------------------------------
   // 4. 本地域名直连
@@ -574,7 +606,7 @@ function main(config) {
   ];
 
   // ------------------------------------------------------------
-  // 5. 直连白名单
+  // 5. 手工直连补充、国内规则集和 IP 兜底
   // ------------------------------------------------------------
   const whitelistRules = [
     // —— 域名层 ——
@@ -585,12 +617,12 @@ function main(config) {
     // qq.com 也覆盖此前单列的微信域名，纯 IP 的微信连接仍由进程规则处理。
     "DOMAIN-SUFFIX,qq.com,DIRECT",
     "DOMAIN-SUFFIX,codebuddy.cn,DIRECT",
-    "DOMAIN-SUFFIX,workbuddy.cn,DIRECT",
+    "DOMAIN-SUFFIX,workbuddy.cn,DIRECT"
+  ];
 
-    // —— IP 层 ——
-    // ⚠️ 不要改用 GEOSITE,cn 做国内判断：该分类混有 browserleaks / whoer /
-    //    ipinfo 等境外站点，会让它们直连而暴露真实 IP。
+  const domesticRules = DOMESTIC_RULE_SETS.map(rs => `RULE-SET,${rs.provider},DIRECT`);
 
+  const ipRules = [
     // 局域网 IPv4
     "IP-CIDR,192.168.0.0/16,DIRECT",
     "IP-CIDR,10.0.0.0/8,DIRECT",
@@ -632,13 +664,15 @@ function main(config) {
 
   // ------------------------------------------------------------
   // 7. 合并规则，覆盖订阅原有的规则列表
-  //    顺序：固定策略(广告/Apple) > 本地域名 > 小米直连 > YouTube/X/bilibili > 规则集组
-  //         (AI/Telegram/iCloud) > Google > 直连白名单 > 微信进程 > Claude Helper > 兜底。
+  //    顺序：广告 > 本地 > 代理例外 > Apple/小米 > YouTube/X/bilibili > AI/iCloud
+  //         > Google > 手工直连 > 进程策略 > 国内域名 > Telegram IP > IP 直连 > 兜底。
   //    Google 放在 AI 规则集之后，确保 gemini.google.com 仍优先归入「国外AI」。
   // ------------------------------------------------------------
   config.rules = [
-    ...fixedRules,
+    ...rejectRules,
     ...localRules,
+    ...proxyExceptionRules,
+    ...fixedRules,
     ...xiaomiDirectRules,
     ...siteRules,
     ...providerRules,
@@ -646,16 +680,18 @@ function main(config) {
     ...whitelistRules,
     ...wechatRules,
     ...claudeHelperRules,
+    ...domesticRules,
+    ...providerIPRules,
+    ...ipRules,
     ...catchAllRule
   ];
 
-  // 8. 海外 DoH 固定经主代理组，节点域名则由 proxy-server-nameserver
-  //    引导解析。单订阅模式主组名称可能不同，所以在此处动态绑定。
+  // 8. 默认海外 DoH 固定经主代理组；DIRECT 出口单独使用国内 DoH。
+  //    单订阅模式主组名称可能不同，所以在此处动态绑定。
   const dnsProxy = hasMainGroup ? `#${MAIN_GROUP}` : "";
   config.dns = {
     ...dnsConfig,
-    "nameserver": foreignNameservers.map(server => `${server}${dnsProxy}`),
-    "direct-nameserver": foreignNameservers.map(server => `${server}${dnsProxy}`)
+    "nameserver": foreignNameservers.map(server => `${server}${dnsProxy}`)
   };
 
   return config;

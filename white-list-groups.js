@@ -22,7 +22,10 @@
 //       -f content="$(base64 -i Script.js)" \
 //       -f sha="$SHA"
 //
-//   （SHA 是并发保护：远程有更新时会 409 冲突，重新取 SHA 再推即可）
+//   （SHA 是并发保护：遇到 409 冲突，先核对并合并远程改动，再取新 SHA 提交）
+//
+// ▍终端辅助文件 terminal-ai-proxy.zsh 位于本目录，GitHub 使用同名文件。
+//   ~/.zshrc 引用它，仅为 Terminal / Cursor 交互终端设置 127.0.0.1:7898。
 //
 // ▍保存本文件后自动生效，无需重启、切换配置或手动激活。
 //
@@ -36,7 +39,8 @@
 // ============================================================
 // Clash Verge 外部脚本
 //   国内规则集自动更新 + 直连补充 + 防 DNS 泄漏 + 广告拦截
-//   + YouTube / X / bilibili / 国外AI / 国内AI / Telegram / iCloud 独立策略组
+//   + YouTube / X / bilibili / 国外AI / Telegram / iCloud / 兜底 独立策略组
+//   + Terminal / Cursor / Claude 走国外AI，已收录国内模型固定直连
 //   + Auto / 低倍率 / 分国家 自动测速子组（hidden，只做备选项）
 //
 // ▍两种运行模式，看有没有 proxy-providers 自动切换：
@@ -52,8 +56,11 @@
 //   单订阅模式（没有 proxy-providers 时的退路）——
 //     复用订阅自带的策略组，只做增补。
 //
-// 服务策略组可在 Clash Verge「代理」页选择节点；bilibili 默认直连，
-// 其他服务默认跟随主代理组。
+// 「兜底」独立选择未匹配流量的节点，默认自动测速；国内AI固定直连。
+// bilibili 默认直连，其他服务默认跟随主代理组；代理组不提供 DIRECT。
+// 节点或规则异常时拒绝连接。这仅在内核运行时生效，不是系统级断网开关。
+// Terminal / Cursor 的交互终端由 terminal-ai-proxy.zsh 配置本机 HTTP 代理；
+// 已打开的终端需 source 该文件。不遵循代理变量的命令仍依赖 TUN。
 //
 // 各项配置的取舍理由记在提交历史里，不在本文件重复：
 //   https://github.com/tjlpow/clash-verge-scripts/commits/main/white-list-groups.js
@@ -69,6 +76,17 @@ const MAIN_GROUP_CANDIDATES = [
   "节点选择", "🚀 节点选择", "手动切换", "代理模式",
   "✈️Final", "Final", "GLOBAL"
 ];
+
+// —— 应用分流 ——
+// 路径覆盖 App 包内的辅助进程；进程名补充 CLI 和安装路径变化。
+// 国内AI规则先匹配，避免 Claude Code / Cursor 直接调用国内模型时绕路。
+const AI_APPS = [
+  { name: "Terminal", path: "(^|/)Terminal\\.app/Contents/", process: "^Terminal$" },
+  { name: "Cursor", path: "(^|/)Cursor\\.app/Contents/", process: "^(Cursor|cursor)( Helper.*)?$" },
+  { name: "Claude", path: "(^|/)Claude\\.app/Contents/", process: "^(Claude|claude)( Helper.*)?$" }
+];
+const TERMINAL_AI_PORT = 7898;
+const TERMINAL_AI_NAME = "terminal-ai";
 
 // —— 需要独立选节点的站点 ——
 // name     : 生成的策略组名，会出现在「代理」页里
@@ -214,7 +232,8 @@ const PROVIDER_GROUPS = [
   {
     name: "国内AI",
     provider: "ai-cn",
-    url: "https://cdn.jsdelivr.net/gh/VPSDance/ai-proxy-rules@main/rules/clash/cn.yaml"
+    url: "https://cdn.jsdelivr.net/gh/VPSDance/ai-proxy-rules@main/rules/clash/cn.yaml",
+    policy: "DIRECT" // 固定直连，不受策略组保存的旧节点选择影响
   },
   {
     name: "Telegram",
@@ -269,12 +288,12 @@ const DOMESTIC_RULE_SETS = [
   }
 ];
 
-// 出口检测网站固定跟随主代理组，优先于国内通用名单和应用直连规则。
+// 出口检测网站跟随主代理组，优先于国内通用名单和应用直连规则。
 // MetaCubeX CN 当前收录 browserleaks.com；明确例外可防止上游分类改变出口。
 const PROXY_EXCEPTION_DOMAINS = ["browserleaks.com", "whoer.net", "ipinfo.io"];
 
 // —— 防 DNS 泄漏配置 ——
-// 默认解析经主代理组查询海外 DoH；DIRECT 出口使用国内 DoH 获取本地 CDN。
+// 默认解析经兜底组查询海外 DoH；DIRECT 出口使用国内 DoH 获取本地 CDN。
 // 不按整个 CN 名单分配国内 DNS，避免覆盖 AI 等服务的代理策略。
 // 代理节点域名也由国内 DoH 引导解析。
 // Clash Verge 中须关闭「DNS 覆写」，否则设置页会接管这些字段。
@@ -315,7 +334,7 @@ const dnsConfig = {
     "localhost.work.weixin.qq.com"
   ],
   "default-nameserver": ["1.1.1.1", "8.8.8.8"],
-  "nameserver": [], // 在 main() 中绑定实际存在的主代理组
+  "nameserver": [], // 在 main() 中绑定独立兜底组
   "proxy-server-nameserver": [...domesticNameservers],
   "direct-nameserver": domesticNameservers.map(server => `${server}#DIRECT`),
   "direct-nameserver-follow-policy": true,
@@ -349,10 +368,13 @@ function buildAutoGroup(name, spec, providerNames, nodeNames) {
     "url": "http://www.gstatic.com/generate_204",
     "interval": 300,
     "tolerance": 50,
+    "empty-fallback": "REJECT",
     "hidden": true
   };
 
   if (providerNames.length) {
+    // 订阅为空或筛选不到节点时保持拒绝，防止内核补入 COMPATIBLE 直连。
+    group["proxies"] = ["REJECT"];
     group["use"] = providerNames;
     if (spec.filter) group["filter"] = spec.filter;
     if (spec.exclude) group["exclude-filter"] = spec.exclude;
@@ -367,15 +389,49 @@ function buildAutoGroup(name, spec, providerNames, nodeNames) {
   return group;
 }
 
+// 代理策略因不支持 UDP 等原因被内核跳过时，立即拒绝同一匹配条件。
+// 不能让连接继续落到后面的国内直连规则或内核默认出口。
+function failClosedRules(rules) {
+  return rules.flatMap(rule => [rule, `${rule.slice(0, rule.lastIndexOf(",") + 1)}REJECT`]);
+}
+
+// 清理代理策略可达的旧订阅子组，禁止通过嵌套分组或 direct 节点意外直连。
+function hardenProxyGroups(groups, roots, directNames) {
+  const byName = new Map(groups.map(group => [group.name, group]));
+  const visited = new Set();
+  function visit(name) {
+    if (visited.has(name)) return;
+    visited.add(name);
+    const group = byName.get(name);
+    if (!group) return;
+    group["empty-fallback"] = "REJECT";
+    group.proxies = (group.proxies || []).filter(proxy => !directNames.has(proxy));
+    if (!group.proxies.includes("REJECT")) group.proxies.push("REJECT");
+    group.proxies.forEach(visit);
+  }
+  roots.filter(Boolean).forEach(visit);
+}
+
 // Define main function (script entry)
 function main(config) {
-  if (!config.rules) return config;
+  if (!Array.isArray(config.rules)) config.rules = [];
 
   // ------------------------------------------------------------
   // 1. 策略组
   // ------------------------------------------------------------
   const providerNames = Object.keys(config["proxy-providers"] || {});
   const providerMode = providerNames.length > 0;
+  providerNames.forEach(name => {
+    const provider = config["proxy-providers"][name];
+    provider["exclude-type"] = [...new Set([
+      ...(provider["exclude-type"] || "").split("|").filter(Boolean), "direct"
+    ])].join("|");
+  });
+  const directNames = new Set(["DIRECT", "COMPATIBLE"]);
+  for (const proxy of config.proxies || []) {
+    if (proxy && proxy.type === "direct") directNames.add(proxy.name);
+  }
+  config.proxies = (config.proxies || []).filter(proxy => proxy && !directNames.has(proxy.name));
 
   // provider 模式（Merge.yaml 里声明了机场）：节点全部由 proxy-providers
   // 供给，订阅自带的节点和策略组一律丢弃，所有组由本脚本重建。这样
@@ -386,7 +442,7 @@ function main(config) {
   const existingGroups = providerMode ? [] : (config["proxy-groups"] || []);
   const nodeNames = providerMode
     ? []
-    : (config.proxies || []).map(p => p && p.name).filter(Boolean);
+    : config.proxies.map(p => p.name).filter(Boolean);
   if (providerMode) config.proxies = [];
 
   const takenNames = new Set(existingGroups.map(g => g && g.name).filter(Boolean));
@@ -442,14 +498,14 @@ function main(config) {
     autoGroups.push(group);
   }
 
-  // provider 模式：主组自己建，选项 = 各自动测速组 + DIRECT + 全部节点(use)
+  // provider 模式：主组自己建，选项 = 各自动测速组 + 全部节点(use) + REJECT
   // 单订阅模式：把子组名插进订阅自带主组的选项列表里
   const createdMainGroups = [];
   if (providerMode) {
     createdMainGroups.push({
       "name": MAIN_GROUP,
       "type": "select",
-      "proxies": [...autoResolvedNames, "DIRECT"],
+      "proxies": [...autoResolvedNames, "REJECT"],
       "use": providerNames
     });
 
@@ -461,7 +517,7 @@ function main(config) {
     createdMainGroups.push({
       "name": "GLOBAL",
       "type": "select",
-      "proxies": [MAIN_GROUP, ...autoResolvedNames, "DIRECT"],
+      "proxies": [MAIN_GROUP, ...autoResolvedNames, "REJECT"],
       "use": providerNames
     });
     takenNames.add("GLOBAL"); // 后面建站点/规则集组时别撞名
@@ -473,6 +529,18 @@ function main(config) {
       mainGroupObj.proxies.splice(insertAt, 0, ...autoResolvedNames);
     }
   }
+
+  // 独立兜底组：不引用主代理组，选择不会随 Proxy 的手动切换而变化。
+  let fallbackName = "兜底";
+  for (let i = 2; takenNames.has(fallbackName); i++) fallbackName = `兜底-${i}`;
+  takenNames.add(fallbackName);
+  const fallbackGroup = {
+    name: fallbackName,
+    type: "select",
+    proxies: [...autoResolvedNames, ...nodeNames, "REJECT"]
+  };
+  if (providerMode) fallbackGroup.use = providerNames;
+  const defaultProxy = hasMainGroup ? MAIN_GROUP : fallbackName;
 
   const newGroups = [];
   const resolvedNames = []; // 与 SITE_GROUPS 同序，存实际用上的组名
@@ -488,10 +556,10 @@ function main(config) {
 
     // 第一项是新组的默认选项：bilibili 默认直连，其余站点跟随主组。
     const options = site.defaultPolicy === "DIRECT" ? ["DIRECT"] : [];
-    if (hasMainGroup) options.push(MAIN_GROUP);
+    options.push(defaultProxy);
     options.push(...autoResolvedNames);
-    if (site.defaultPolicy !== "DIRECT") options.push("DIRECT");
     options.push(...nodeNames);
+    options.push("REJECT");
 
     const group = { "name": name, "type": "select", "proxies": options };
     if (providerNames.length) group["use"] = providerNames;
@@ -504,6 +572,10 @@ function main(config) {
   const providerResolvedNames = [];
 
   for (const rs of PROVIDER_GROUPS) {
+    if (rs.policy) {
+      providerResolvedNames.push(rs.policy);
+      continue;
+    }
     let name = rs.name;
     for (let i = 2; takenNames.has(name); i++) {
       name = `${rs.name}-${i}`;
@@ -512,8 +584,7 @@ function main(config) {
     providerResolvedNames.push(name);
 
     const options = [];
-    if (hasMainGroup) options.push(MAIN_GROUP);
-    options.push(...autoResolvedNames, "DIRECT", ...nodeNames);
+    options.push(defaultProxy, ...autoResolvedNames, ...nodeNames, "REJECT");
 
     const group = { "name": name, "type": "select", "proxies": options };
     if (providerNames.length) group["use"] = providerNames;
@@ -524,10 +595,16 @@ function main(config) {
   config["proxy-groups"] = [
     ...existingGroups,
     ...createdMainGroups,
+    fallbackGroup,
     ...newGroups,
     ...providerGroups,
     ...autoGroups
   ];
+  hardenProxyGroups(config["proxy-groups"], [
+    MAIN_GROUP, "GLOBAL", fallbackName,
+    ...resolvedNames.filter((_, i) => SITE_GROUPS[i].defaultPolicy !== "DIRECT"),
+    ...providerResolvedNames.filter(name => name !== "DIRECT")
+  ], directNames);
 
   // 声明规则集，按各自格式加载，并由 mihomo 按 interval 自动更新。
   // 下载经主代理组，避免规则源连接受新加入的国内名单影响。
@@ -542,7 +619,7 @@ function main(config) {
       url: rs.url,
       path: `./rules/${rs.provider}.${extension}`,
       interval: rs.interval || 86400,
-      proxy: hasMainGroup ? MAIN_GROUP : "DIRECT"
+      proxy: defaultProxy
     };
   });
   config["rule-providers"] = { ...(config["rule-providers"] || {}), ...ruleProviders };
@@ -569,8 +646,15 @@ function main(config) {
     `RULE-SET,${rs.provider},${providerResolvedNames[i]}`,
     ...(rs.extraMatchers || []).map(m => `${m},${providerResolvedNames[i]}`)
   ];
+  const domesticAIRules = PROVIDER_GROUPS.flatMap((rs, i) =>
+    rs.provider === "ai-cn" ? buildProviderRules(rs, i) : []
+  );
+  const overseasAIRules = PROVIDER_GROUPS.flatMap((rs, i) =>
+    rs.provider === "ai-global" ? buildProviderRules(rs, i) : []
+  );
   const providerRules = PROVIDER_GROUPS.flatMap((rs, i) =>
-    rs.behavior === "ipcidr" ? [] : buildProviderRules(rs, i)
+    rs.behavior === "ipcidr" || ["ai-cn", "ai-global"].includes(rs.provider)
+      ? [] : buildProviderRules(rs, i)
   );
   const providerIPRules = PROVIDER_GROUPS.flatMap((rs, i) =>
     rs.behavior === "ipcidr" ? buildProviderRules(rs, i) : []
@@ -583,16 +667,23 @@ function main(config) {
     .map(rs => `RULE-SET,${rs.provider},${rs.policy}`);
   const fixedRules = FIXED_RULE_SETS.filter(rs => rs.policy !== "REJECT")
     .map(rs => `RULE-SET,${rs.provider},${rs.policy}`);
-  const proxyExceptionRules = hasMainGroup
-    ? PROXY_EXCEPTION_DOMAINS.map(domain => `DOMAIN-SUFFIX,${domain},${MAIN_GROUP}`)
-    : [];
+  const proxyExceptionRules = PROXY_EXCEPTION_DOMAINS.map(
+    domain => `DOMAIN-SUFFIX,${domain},${defaultProxy}`
+  );
 
   // ------------------------------------------------------------
   // 4. 本地域名直连
   //    路由器后台 (miwifi.com)、localhost、localdomain 等
   // ------------------------------------------------------------
   const localRules = [
-    "GEOSITE,private,DIRECT"
+    "GEOSITE,private,DIRECT",
+    "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
+    "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
+    "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
+    "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
+    "IP-CIDR6,::1/128,DIRECT,no-resolve",
+    "IP-CIDR6,fe80::/10,DIRECT,no-resolve",
+    "IP-CIDR6,fc00::/7,DIRECT,no-resolve"
   ];
 
   // 小米官网、账号及 MiMo 官网、开放平台/API、桌面端、MiMo Code。
@@ -623,17 +714,6 @@ function main(config) {
   const domesticRules = DOMESTIC_RULE_SETS.map(rs => `RULE-SET,${rs.provider},DIRECT`);
 
   const ipRules = [
-    // 局域网 IPv4
-    "IP-CIDR,192.168.0.0/16,DIRECT",
-    "IP-CIDR,10.0.0.0/8,DIRECT",
-    "IP-CIDR,172.16.0.0/12,DIRECT",
-    "IP-CIDR,127.0.0.0/8,DIRECT",
-
-    // 局域网 IPv6
-    "IP-CIDR6,::1/128,DIRECT",   // 回环
-    "IP-CIDR6,fe80::/10,DIRECT", // 链路本地
-    "IP-CIDR6,fc00::/7,DIRECT",  // ULA（含 fd00::/8）
-
     // 国内 IP。不加 no-resolve —— 需对带域名的连接解析后再判断归属
     "GEOIP,CN,DIRECT"
   ];
@@ -645,53 +725,84 @@ function main(config) {
     "PROCESS-NAME,WeChatAppEx Helper,DIRECT"
   ];
 
-  // Claude Desktop 的 hCaptcha 等辅助请求不在 ai-global 规则集中，
-  // 原本会落到 MATCH 主组。只为 Claude Helper 进程补兜底，避免影响
-  // 其他应用的 hCaptcha，也保留前面域名规则的优先级。
+  // 应用规则先于普通国内名单，避免辅助请求被共享 CDN 的直连规则抢走。
+  // 国内AI已在应用规则前固定直连，包括 Claude Code 改用国内模型的情况。
   const overseasAIIndex = PROVIDER_GROUPS.findIndex(rs => rs.name === "国外AI");
-  const claudeHelperRules = overseasAIIndex < 0 ? [] : [
-    `PROCESS-NAME,Claude Helper,${providerResolvedNames[overseasAIIndex]}`
-  ];
+  const aiPolicy = overseasAIIndex < 0 ? "REJECT" : providerResolvedNames[overseasAIIndex];
+  const appRules = AI_APPS.flatMap(app => [
+    `PROCESS-PATH-REGEX,${app.path},${aiPolicy}`,
+    `PROCESS-NAME-REGEX,${app.process},${aiPolicy}`
+  ]);
+
+  // 本机 HTTP/SOCKS 规则入口供终端子进程使用。不能设置 proxy: aiPolicy，
+  // 否则直接绑定节点会跳过国内模型例外。Shell 引用见 terminal-ai-proxy.zsh。
+  const listeners = (config.listeners || []).filter(listener => listener.name !== TERMINAL_AI_NAME);
+  if (listeners.some(listener => String(listener.port) === String(TERMINAL_AI_PORT))) {
+    throw new Error(`终端 AI 端口 ${TERMINAL_AI_PORT} 已被其他 listener 使用`);
+  }
+  if ([config.port, config["socks-port"], config["mixed-port"], config["redir-port"], config["tproxy-port"]]
+    .some(port => String(port) === String(TERMINAL_AI_PORT))) {
+    throw new Error(`终端 AI 端口 ${TERMINAL_AI_PORT} 与已有代理端口冲突`);
+  }
+  config.listeners = [...listeners, {
+    name: TERMINAL_AI_NAME, type: "mixed", listen: "127.0.0.1", port: TERMINAL_AI_PORT,
+    rule: TERMINAL_AI_NAME
+  }];
+  config["sub-rules"] = {
+    ...(config["sub-rules"] || {}),
+    [TERMINAL_AI_NAME]: [
+      ...rejectRules, ...localRules, ...domesticAIRules,
+      ...failClosedRules([`MATCH,${aiPolicy}`])
+    ]
+  };
 
   // ------------------------------------------------------------
-  // 6. 兜底规则 (MATCH 必须放在最后)
-  //    主组没解析出来时退回 DIRECT —— 只是保证配置能加载，这种情况下
-  //    未命中的流量会全部直连（不走代理），属于异常兜底，正常不会走到
+  // 6. 兜底：独立选择节点。无节点、节点不支持 UDP 或其他异常均拒绝。
   // ------------------------------------------------------------
   const catchAllRule = [
-    `MATCH,${hasMainGroup ? MAIN_GROUP : "DIRECT"}`
+    ...failClosedRules([`MATCH,${fallbackName}`])
   ];
 
   // ------------------------------------------------------------
   // 7. 合并规则，覆盖订阅原有的规则列表
-  //    顺序：广告 > 本地 > 代理例外 > Apple/小米 > YouTube/X/bilibili > AI/iCloud
-  //         > Google > 手工直连 > 进程策略 > 国内域名 > Telegram IP > IP 直连 > 兜底。
+  //    顺序：广告 > 本地 > 国内AI > 代理例外 > 国外AI/应用 > Apple/小米
+  //         > 站点/iCloud/Google > 手工直连/微信 > 国内域名 > Telegram IP > 国内IP > 兜底。
   //    Google 放在 AI 规则集之后，确保 gemini.google.com 仍优先归入「国外AI」。
   // ------------------------------------------------------------
   config.rules = [
     ...rejectRules,
     ...localRules,
-    ...proxyExceptionRules,
+    ...domesticAIRules,
+    ...failClosedRules(proxyExceptionRules),
+    ...failClosedRules(overseasAIRules),
+    ...failClosedRules(appRules),
     ...fixedRules,
     ...xiaomiDirectRules,
-    ...siteRules,
-    ...providerRules,
-    ...deferredSiteRules,
+    ...failClosedRules(siteRules),
+    ...failClosedRules(providerRules),
+    ...failClosedRules(deferredSiteRules),
     ...whitelistRules,
     ...wechatRules,
-    ...claudeHelperRules,
     ...domesticRules,
-    ...providerIPRules,
+    ...failClosedRules(providerIPRules),
     ...ipRules,
     ...catchAllRule
   ];
 
-  // 8. 默认海外 DoH 固定经主代理组；DIRECT 出口单独使用国内 DoH。
-  //    单订阅模式主组名称可能不同，所以在此处动态绑定。
-  const dnsProxy = hasMainGroup ? `#${MAIN_GROUP}` : "";
+  // 8. 默认海外 DoH 跟随兜底组，避免未匹配流量仍依赖 Proxy 的节点选择。
+  //    DIRECT 出口单独使用国内 DoH。
+  const dnsProxy = `#${fallbackName}`;
   config.dns = {
     ...dnsConfig,
     "nameserver": foreignNameservers.map(server => `${server}${dnsProxy}`)
+  };
+
+  // 这些保护依赖内核运行；关闭或退出 Clash 后不能替代系统级出站控制。
+  config.mode = "rule";
+  config["find-process-mode"] = "always";
+  config.tun = {
+    ...(config.tun || {}), enable: true, "auto-route": true, "strict-route": true,
+    "dns-hijack": [...new Set([...(config.tun?.["dns-hijack"] || []), "any:53", "tcp://any:53"])]
   };
 
   return config;

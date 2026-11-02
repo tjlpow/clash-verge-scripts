@@ -57,7 +57,7 @@
 //     复用订阅自带的策略组，只做增补。
 //
 // 「兜底」独立选择未匹配流量的节点，默认自动测速；国内AI固定直连。
-// bilibili 默认直连，其他服务默认跟随主代理组；代理组不提供 DIRECT。
+// bilibili 默认直连；兜底和 iCloud 提供手动 DIRECT 选项，其他代理组禁止直连。
 // 节点或规则异常时拒绝连接。这仅在内核运行时生效，不是系统级断网开关。
 // Terminal / Cursor 的交互终端由 terminal-ai-proxy.zsh 配置本机 HTTP 代理；
 // 已打开的终端需 source 该文件。不遵循代理变量的命令仍依赖 TUN。
@@ -245,7 +245,8 @@ const PROVIDER_GROUPS = [
     name: "iCloud",
     provider: "icloud",
     url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/icloud.txt",
-    behavior: "domain"
+    behavior: "domain",
+    allowDirect: true
   }
 ];
 
@@ -540,7 +541,8 @@ function main(config) {
     proxies: [...autoResolvedNames, ...nodeNames, "REJECT"]
   };
   if (providerMode) fallbackGroup.use = providerNames;
-  const defaultProxy = hasMainGroup ? MAIN_GROUP : fallbackName;
+  // 没有主组时拒绝代理连接，不能借用可手动直连的兜底组作为 AI 的上游。
+  const defaultProxy = hasMainGroup ? MAIN_GROUP : "REJECT";
 
   const newGroups = [];
   const resolvedNames = []; // 与 SITE_GROUPS 同序，存实际用上的组名
@@ -605,6 +607,14 @@ function main(config) {
     ...resolvedNames.filter((_, i) => SITE_GROUPS[i].defaultPolicy !== "DIRECT"),
     ...providerResolvedNames.filter(name => name !== "DIRECT")
   ], directNames);
+  // 手动直连例外在清理后加入，排在 REJECT 之后；缺少节点时仍默认拒绝。
+  // 兜底选择只影响未匹配流量，iCloud 选择只影响其专属规则。
+  fallbackGroup.proxies.push("DIRECT");
+  PROVIDER_GROUPS.forEach((rs, i) => {
+    if (!rs.allowDirect) return;
+    const group = providerGroups.find(group => group.name === providerResolvedNames[i]);
+    if (group) group.proxies.push("DIRECT");
+  });
 
   // 声明规则集，按各自格式加载，并由 mihomo 按 interval 自动更新。
   // 下载经主代理组，避免规则源连接受新加入的国内名单影响。
@@ -797,13 +807,10 @@ function main(config) {
     "nameserver": foreignNameservers.map(server => `${server}${dnsProxy}`)
   };
 
-  // 这些保护依赖内核运行；关闭或退出 Clash 后不能替代系统级出站控制。
+  // 进程分流保护依赖内核运行，不能替代系统级出站控制。
   config.mode = "rule";
   config["find-process-mode"] = "always";
-  config.tun = {
-    ...(config.tun || {}), enable: true, "auto-route": true, "strict-route": true,
-    "dns-hijack": [...new Set([...(config.tun?.["dns-hijack"] || []), "any:53", "tcp://any:53"])]
-  };
+  // TUN 开关、DNS 劫持和严格路由由 Clash Verge 设置管理，脚本不写入 tun。
 
   return config;
 }

@@ -716,9 +716,7 @@ function main(config) {
     "DOMAIN-SUFFIX,csdn.net,DIRECT",
     // 这些服务可能解析到境外 CDN IP；按域名直连，不扩大到共享 IP 网段。
     // qq.com 也覆盖此前单列的微信域名，纯 IP 的微信连接仍由进程规则处理。
-    "DOMAIN-SUFFIX,qq.com,DIRECT",
-    "DOMAIN-SUFFIX,codebuddy.cn,DIRECT",
-    "DOMAIN-SUFFIX,workbuddy.cn,DIRECT"
+    "DOMAIN-SUFFIX,qq.com,DIRECT"
   ];
 
   const domesticRules = DOMESTIC_RULE_SETS.map(rs => `RULE-SET,${rs.provider},DIRECT`);
@@ -814,3 +812,4 @@ function main(config) {
 
   return config;
 }
+

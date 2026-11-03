@@ -707,18 +707,8 @@ function main(config) {
   ];
 
   // ------------------------------------------------------------
-  // 5. 手工直连补充、国内规则集和 IP 兜底
+  // 5. 国内规则集和 IP 兜底
   // ------------------------------------------------------------
-  const whitelistRules = [
-    // —— 域名层 ——
-    "DOMAIN-SUFFIX,baidu.com,DIRECT",
-    "DOMAIN-SUFFIX,taobao.com,DIRECT",
-    "DOMAIN-SUFFIX,csdn.net,DIRECT",
-    // 这些服务可能解析到境外 CDN IP；按域名直连，不扩大到共享 IP 网段。
-    // qq.com 也覆盖此前单列的微信域名，纯 IP 的微信连接仍由进程规则处理。
-    "DOMAIN-SUFFIX,qq.com,DIRECT"
-  ];
-
   const domesticRules = DOMESTIC_RULE_SETS.map(rs => `RULE-SET,${rs.provider},DIRECT`);
 
   const ipRules = [
@@ -774,7 +764,7 @@ function main(config) {
   // ------------------------------------------------------------
   // 7. 合并规则，覆盖订阅原有的规则列表
   //    顺序：广告 > 本地 > 国内AI > 代理例外 > 国外AI/应用 > Apple/小米
-  //         > 站点/iCloud/Google > 手工直连/微信 > 国内域名 > Telegram IP > 国内IP > 兜底。
+  //         > 站点/iCloud/Google > 微信 > 国内域名 > Telegram IP > 国内IP > 兜底。
   //    Google 放在 AI 规则集之后，确保 gemini.google.com 仍优先归入「国外AI」。
   // ------------------------------------------------------------
   config.rules = [
@@ -789,7 +779,6 @@ function main(config) {
     ...failClosedRules(siteRules),
     ...failClosedRules(providerRules),
     ...failClosedRules(deferredSiteRules),
-    ...whitelistRules,
     ...wechatRules,
     ...domesticRules,
     ...failClosedRules(providerIPRules),
@@ -812,4 +801,5 @@ function main(config) {
 
   return config;
 }
+
 

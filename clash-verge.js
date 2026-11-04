@@ -1,44 +1,15 @@
 // ============================================================
-// 【维护流程 · 别删这段】
+// 维护流程
+// 1. **修改**：直接编辑本机 profiles/Script.js，保留 Clash Verge 读取的文件名。
+// 2. **检查与提交**：检查后提交 tjlpow/clash-verge-scripts 的 clash-verge.js。
+//    单文件更新时核对远程 SHA，避免覆盖并发改动。
+// 3. **生效**：提示用户自行重启 Clash Verge 并验证分流。维护时只修改文件。
 //
-// ▍权威副本 = Clash Verge 实际读取的这个文件，改动直接改它：
-//     ~/Library/Application Support/
-//       io.github.clash-verge-rev.clash-verge-rev/profiles/Script.js
-//
-// ▍GitHub 备份（两边文件名不同，属正常，路径是 API 参数决定的）：
-//     tjlpow/clash-verge-scripts  →  white-list-groups.js
-//     https://github.com/tjlpow/clash-verge-scripts/blob/main/white-list-groups.js
-//
-// ▍本机没有 git 克隆，别去找 .git 目录。用 GitHub Contents API 单文件推送：
-//
-//     cd ~/Library/Application\ Support/\
-//     io.github.clash-verge-rev.clash-verge-rev/profiles
-//
-//     REPO=tjlpow/clash-verge-scripts
-//     PATH_IN_REPO=white-list-groups.js
-//     SHA=$(gh api repos/$REPO/contents/$PATH_IN_REPO --jq .sha)
-//     gh api --method PUT repos/$REPO/contents/$PATH_IN_REPO \
-//       -f message="改动说明" \
-//       -f content="$(base64 -i Script.js)" \
-//       -f sha="$SHA"
-//
-//   （SHA 是并发保护：遇到 409 冲突，先核对并合并远程改动，再取新 SHA 提交）
-//
-// ▍终端辅助文件 terminal-ai-proxy.zsh 位于本目录，GitHub 使用同名文件。
-//   ~/.zshrc 引用它，仅为 Terminal / Cursor 交互终端设置 127.0.0.1:7898。
-//
-// ▍每轮流程：
-//   1. **修改**：直接编辑本机 Script.js。
-//   2. **检查与提交**：完成本机检查后即可提交 GitHub。
-//   3. **生效**：提示用户自行重启 Clash Verge，重启后验证分流。
-//
-// ▍维护时仅修改文件，不操作 Clash 界面，不代替用户重启或切换激活。
-//
-// ⚠️ Clash 内置编辑器中的旧内容可能覆盖磁盘改动，
-//    修改脚本后不要在旧编辑窗口中保存。
-//
-// ▍若把本文件换成别的版本（如不带策略组的 white-list.js），
-//   记得同步改上面的 PATH_IN_REPO，否则会推错文件。
+// ▍安装与用法见 README：
+//   https://github.com/tjlpow/clash-verge-scripts#clash-verge
+// ▍本机目录：~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/profiles/
+// ▍机场订阅链接仅保存在本机 Merge.yaml。
+// ▍内置脚本编辑器可能覆盖磁盘改动，修改后请避免保存旧编辑窗口。
 // ============================================================
 
 // ============================================================
@@ -63,12 +34,12 @@
 //
 // 「兜底」独立选择未匹配流量的节点，默认自动测速；国内AI固定直连。
 // bilibili 默认直连；兜底和 iCloud 提供手动 DIRECT 选项，其他代理组禁止直连。
-// 节点或规则异常时拒绝连接。这仅在内核运行时生效，不是系统级断网开关。
+// 代理规则附带 REJECT 保护，防止不支持 UDP 等情况落入后面的直连规则。
 // Terminal / Cursor 的交互终端由 terminal-ai-proxy.zsh 配置本机 HTTP 代理；
 // 已打开的终端需 source 该文件。不遵循代理变量的命令仍依赖 TUN。
 //
 // 各项配置的取舍理由记在提交历史里，不在本文件重复：
-//   https://github.com/tjlpow/clash-verge-scripts/commits/main/white-list-groups.js
+//   https://github.com/tjlpow/clash-verge-scripts/commits/main/clash-verge.js
 // ============================================================
 
 // —— 主代理组名 ——
@@ -702,7 +673,7 @@ function main(config) {
   ];
 
   // 小米官网、账号及 MiMo 官网、开放平台/API、桌面端、MiMo Code。
-  // 放在 AI 规则集之前，避免规则集更新后把这些域名改走代理。
+  // 已收录的国内模型由前方国内 AI 规则优先匹配。
   const xiaomiDirectRules = [
     "DOMAIN-SUFFIX,mi.com,DIRECT",
     "DOMAIN-SUFFIX,xiaomi.com,DIRECT",

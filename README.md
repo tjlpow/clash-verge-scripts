@@ -40,7 +40,7 @@ Clash 版还按进程匹配 Terminal、Cursor、Claude 和微信。已匹配的�
 
 1. **添加机场**　在 App 首页添加订阅。
 2. **匹配订阅名**　把 [Shadowrocket.conf](Shadowrocket.conf) 的 `[Proxy Group]` 中的 `Immtele` 和 `Shadowsocks` 换成 App 首页的真实订阅名。手选组用订阅名和 `use=true` 展开单个节点。增减订阅时同步更新组成员。
-3. **导入并测试**　把配置放到 iCloud Drive 的 Shadowrocket 文件夹。在手机上导入、启用该配置，将全局路由设为「配置」，再测试常用服务和策略组。
+3. **导入并测试**　把配置放到 iCloud Drive 的 Shadowrocket 文件夹。在手机上从文件导入并启用当前修订配置，核对「通用 → DNS 覆写」地址末尾为 `#proxy`。将全局路由设为「配置」，再测试常用服务和策略组。
 
 Shadowrocket 按域名和 IP 分流。远程规则集随配置更新，自动测速子组在支持 `hidden=1` 的版本中隐藏。
 
@@ -61,4 +61,4 @@ Shadowrocket 按域名和 IP 分流。远程规则集随配置更新，自动测
 ## 更新流程
 
 - **Clash Verge**　编辑本机 `Script.js`，完成检查后提交到仓库的 `clash-verge.js`，再提示用户自行重启并验证。
-- **Shadowrocket**　编辑本机配置并将文件名更新为当天日期 `Shadowrocket-YYYY-MM-DD.conf`，完成检查后提交到仓库的 `Shadowrocket.conf`，再提示用户从 iCloud 导入当天文件并在手机上测试。
+- **Shadowrocket**　编辑本机配置，文件名使用当天日期 `Shadowrocket-YYYY-MM-DD.conf`。同日再次修改时递增 `-r2`、`-r3` 后缀。检查后提交到仓库的 `Shadowrocket.conf`，再提示用户从 iCloud 导入并启用该修订文件，核对 DNS 后在手机上测试。

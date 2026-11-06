@@ -15,8 +15,8 @@
 // ============================================================
 // Clash Verge 外部脚本
 //   国内规则集自动更新 + 直连补充 + 防 DNS 泄漏 + 广告拦截
-//   + YouTube / X / bilibili / 国外AI / Telegram / iCloud / 兜底 独立策略组
-//   + Terminal / Cursor / Claude 走国外AI，已收录国内模型固定直连
+//   + YouTube / X / bilibili / 🤖 AI / Telegram / iCloud / 🐟 Fallback 独立策略组
+//   + Terminal / Cursor / Claude 走「🤖 AI」，已收录国内模型固定直连
 //   + Auto / 低倍率 / 分国家 自动测速子组（hidden，只做备选项）
 //
 // ▍两种运行模式，看有没有 proxy-providers 自动切换：
@@ -32,8 +32,8 @@
 //   单订阅模式（没有 proxy-providers 时的退路）——
 //     复用订阅自带的策略组，只做增补。
 //
-// 「兜底」独立选择未匹配流量的节点，默认自动测速；国内AI固定直连。
-// bilibili 默认直连；兜底和 iCloud 提供手动 DIRECT 选项，其他代理组禁止直连。
+// 「🐟 Fallback」独立选择未匹配流量的节点，默认自动测速；国内AI固定直连。
+// bilibili 默认直连；🐟 Fallback 和 iCloud 提供手动 DIRECT 选项，其他代理组禁止直连。
 // 代理规则附带 REJECT 保护，防止不支持 UDP 等情况落入后面的直连规则。
 // Terminal / Cursor 的交互终端由 terminal-ai-proxy.zsh 配置本机 HTTP 代理；
 // 已打开的终端需 source 该文件。不遵循代理变量的命令仍依赖 TUN。
@@ -43,11 +43,11 @@
 // ============================================================
 
 // —— 主代理组名 ——
-// 不同机场订阅的主组叫法不一样（Proxy / Proxies / 节点选择 …），写死一个
-// 名字换订阅就会炸：兜底规则 MATCH 指向不存在的组时，mihomo 会直接拒绝
-// 整份配置（报 "proxy [xxx] not found"，变更被撤销）。
-// 所以按下面的顺序找第一个真实存在的组，都没有再退回订阅里第一个 select 组。
+// 两版统一使用 🚀 main、🐟 Fallback、🤖 AI。
+// 单订阅模式先识别订阅主组，再统一名称并更新引用。
+const MAIN_GROUP_NAME = "🚀 main";
 const MAIN_GROUP_CANDIDATES = [
+  MAIN_GROUP_NAME, "main", "Main",
   "Proxy", "Proxies", "PROXY",
   "节点选择", "🚀 节点选择", "手动切换", "代理模式",
   "✈️Final", "Final", "GLOBAL"
@@ -79,7 +79,7 @@ const SITE_GROUPS = [
   },
   {
     // 参考 BilibiliHMT 的域名范围，并补上游戏域名与常见视频 CDN；默认直连，
-    // 在「代理」页可改选 Proxy、自动组或任意节点。避免照搬其 IP 规则，
+    // 在「代理」页可改选 🚀 main、自动组或任意节点。避免照搬其 IP 规则，
     // 以免公用 IP 或将来变更的地址误伤其他服务。
     name: "bilibili",
     defaultPolicy: "DIRECT",
@@ -107,7 +107,7 @@ const SITE_GROUPS = [
   },
   {
     // Google 搜索、AI Mode 及关联资源独立选节点；Gemini 等海外 AI 服务
-    // 仍由下方 ai-global 规则集优先分流到「国外AI」。YouTube 的规则排在
+    // 仍由下方 ai-global 规则集优先分流到「🤖 AI」。YouTube 的规则排在
     // 这里前面，所以不会被 google.com 的域名规则抢走。
     name: "Google",
     afterProviderRules: true,
@@ -122,7 +122,7 @@ const SITE_GROUPS = [
 ];
 
 // —— 首页不单独显示的组名 ——
-// 订阅自带的 "Auto" 只想当 Proxy 的备选项，不需要单独占一个首页 tile。
+// 订阅自带的 "Auto" 只想当 🚀 main 的备选项，不需要单独占一个首页 tile。
 // 2026-08-15 已实测 Clash Verge 会认这个字段，首页确实不显示了。
 const HIDDEN_GROUPS = ["Auto"];
 
@@ -201,7 +201,7 @@ const AUTO_GROUPS = [
 // 换完只需替换域名，路径不用动。
 const PROVIDER_GROUPS = [
   {
-    name: "国外AI",
+    name: "🤖 AI",
     provider: "ai-global",
     url: "https://cdn.jsdelivr.net/gh/VPSDance/ai-proxy-rules@main/rules/clash/global.yaml"
   },
@@ -424,18 +424,40 @@ function main(config) {
 
   const takenNames = new Set(existingGroups.map(g => g && g.name).filter(Boolean));
 
-  // 主组：provider 模式下订阅的组已经全丢了，自己建一个；否则按候选名单
-  // 探测订阅自带的主组（不同机场叫法不一样，写死名字换订阅就会炸：兜底
-  // 规则 MATCH 指向不存在的组时 mihomo 会拒绝整份配置）。
-  const MAIN_GROUP = providerMode
-    ? "Proxy"
-    : (MAIN_GROUP_CANDIDATES.find(n => takenNames.has(n)) ||
-       (existingGroups.find(
-         g => g && g.type === "select" && Array.isArray(g.proxies) && g.proxies.length
-       ) || {}).name ||
-       null);
+  // provider 模式创建统一主组；单订阅模式识别并重命名原主组。
+  const sourceMainGroup = MAIN_GROUP_CANDIDATES.find(n => takenNames.has(n)) ||
+    (existingGroups.find(
+      g => g && g.type === "select" && Array.isArray(g.proxies) && g.proxies.length
+    ) || {}).name || null;
+  const MAIN_GROUP = providerMode || sourceMainGroup ? MAIN_GROUP_NAME : null;
   const hasMainGroup = Boolean(MAIN_GROUP);
-  if (providerMode) takenNames.add(MAIN_GROUP);
+  if (!providerMode && sourceMainGroup && sourceMainGroup !== MAIN_GROUP) {
+    for (const group of existingGroups) {
+      if (group.name === sourceMainGroup) group.name = MAIN_GROUP;
+      if (Array.isArray(group.proxies)) {
+        group.proxies = group.proxies.map(name => name === sourceMainGroup ? MAIN_GROUP : name);
+      }
+    }
+    // 保留订阅附带的链式代理、下载策略、监听入口和子规则引用。
+    for (const entry of [
+      ...config.proxies, ...(config.listeners || []),
+      ...Object.values(config["rule-providers"] || {})
+    ]) {
+      for (const key of ["proxy", "dialer-proxy"]) {
+        if (entry[key] === sourceMainGroup) entry[key] = MAIN_GROUP;
+      }
+    }
+    for (const rules of Object.values(config["sub-rules"] || {})) {
+      rules.forEach((rule, i) => {
+        const parts = rule.split(",");
+        const policyIndex = parts.length - (parts[parts.length - 1] === "no-resolve" ? 2 : 1);
+        if (parts[policyIndex] === sourceMainGroup) parts[policyIndex] = MAIN_GROUP;
+        rules[i] = parts.join(",");
+      });
+    }
+    takenNames.delete(sourceMainGroup);
+  }
+  if (hasMainGroup) takenNames.add(MAIN_GROUP);
 
   // 单订阅模式下才需要动订阅自带的组：标 hidden + 给 Auto 滤掉高倍率节点。
   // provider 模式下这些组已经不存在了，对应的能力由下面 AUTO_GROUPS 重建。
@@ -507,9 +529,9 @@ function main(config) {
     }
   }
 
-  // 独立兜底组：不引用主代理组，选择不会随 Proxy 的手动切换而变化。
-  let fallbackName = "兜底";
-  for (let i = 2; takenNames.has(fallbackName); i++) fallbackName = `兜底-${i}`;
+  // 独立兜底组：不引用主代理组，选择不会随 🚀 main 的手动切换而变化。
+  let fallbackName = "🐟 Fallback";
+  for (let i = 2; takenNames.has(fallbackName); i++) fallbackName = `🐟 Fallback-${i}`;
   takenNames.add(fallbackName);
   const fallbackGroup = {
     name: fallbackName,
@@ -619,7 +641,7 @@ function main(config) {
       : site.matchers.map(m => `${m},${resolvedNames[i]}`)
   );
   // google.com 同时覆盖 gemini.google.com；把 Google 域名规则放在
-  // ai-global 之后，才能继续让 Gemini 等 AI 域名优先走「国外AI」。
+  // ai-global 之后，才能继续让 Gemini 等 AI 域名优先走「🤖 AI」。
   const deferredSiteRules = SITE_GROUPS.flatMap(
     (site, i) => site.afterProviderRules
       ? site.matchers.map(m => `${m},${resolvedNames[i]}`)
@@ -701,7 +723,7 @@ function main(config) {
 
   // 应用规则先于普通国内名单，避免辅助请求被共享 CDN 的直连规则抢走。
   // 国内AI已在应用规则前固定直连，包括 Claude Code 改用国内模型的情况。
-  const overseasAIIndex = PROVIDER_GROUPS.findIndex(rs => rs.name === "国外AI");
+  const overseasAIIndex = PROVIDER_GROUPS.findIndex(rs => rs.name === "🤖 AI");
   const aiPolicy = overseasAIIndex < 0 ? "REJECT" : providerResolvedNames[overseasAIIndex];
   const appRules = AI_APPS.flatMap(app => [
     `PROCESS-PATH-REGEX,${app.path},${aiPolicy}`,
@@ -739,9 +761,9 @@ function main(config) {
 
   // ------------------------------------------------------------
   // 7. 合并规则，覆盖订阅原有的规则列表
-  //    顺序：广告 > 本地 > 国内AI > 代理例外 > 国外AI/应用 > Apple/小米
+  //    顺序：广告 > 本地 > 国内AI > 代理例外 > 🤖 AI/应用 > Apple/小米
   //         > 站点/iCloud/Google > 微信 > 国内域名 > Telegram IP > 国内IP > 兜底。
-  //    Google 放在 AI 规则集之后，确保 gemini.google.com 仍优先归入「国外AI」。
+  //    Google 放在 AI 规则集之后，确保 gemini.google.com 仍优先归入「🤖 AI」。
   // ------------------------------------------------------------
   config.rules = [
     ...rejectRules,
@@ -762,7 +784,7 @@ function main(config) {
     ...catchAllRule
   ];
 
-  // 8. 默认海外 DoH 跟随兜底组，避免未匹配流量仍依赖 Proxy 的节点选择。
+  // 8. 默认海外 DoH 跟随兜底组，避免未匹配流量仍依赖 🚀 main 的节点选择。
   //    DIRECT 出口单独使用国内 DoH。
   const dnsProxy = `#${fallbackName}`;
   config.dns = {

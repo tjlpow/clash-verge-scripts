@@ -42,6 +42,8 @@ Clash 版还按进程匹配 Terminal、Cursor、Claude 和微信。已匹配的�
 2. **匹配订阅名**　把 [Shadowrocket.conf](Shadowrocket.conf) 的 `[Proxy Group]` 中的 `Immtele` 和 `Shadowsocks` 换成 App 首页的真实订阅名。手选组用订阅名和 `use=true` 展开单个节点。增减订阅时同步更新组成员。
 3. **导入并测试**　把配置放到 iCloud Drive 的 Shadowrocket 文件夹。在手机上从文件导入并启用当前修订配置，核对「通用 → DNS 覆写」地址末尾为 `#proxy`。将全局路由设为「配置」，再测试常用服务和策略组。
 
+Shadowrocket 的自定义主组名为「主代理」，内置 `PROXY` 表示首页当前节点。各代理组初始选择 `PROXY`，先在首页选中已验证可用的节点，再按需在各组中改选主代理、地区组或单个节点。bilibili 初始直连，兜底和 iCloud 可手选直连。
+
 Shadowrocket 按域名和 IP 分流。远程规则集随配置更新，自动测速子组在支持 `hidden=1` 的版本中隐藏。
 
 ## 策略组选项
@@ -53,7 +55,7 @@ Shadowrocket 按域名和 IP 分流。远程规则集随配置更新，自动测
 | YouTube、X、Google、Telegram、iCloud | 各自的策略组，iCloud 可手选直连 |
 | 哔哩哔哩 | bilibili 组，默认直连 |
 | 国内服务 | 国内域名规则集或中国 IP 命中后直连 |
-| 出口检测站点 | browserleaks.com、whoer.net 和 ipinfo.io 走 Proxy 组 |
+| 出口检测站点 | browserleaks.com、whoer.net 和 ipinfo.io 走主代理组，Clash 中名为 Proxy，Shadowrocket 中名为主代理 |
 | 未匹配流量 | 独立的兜底组，可选自动测速、地区组、单个节点、REJECT 或 DIRECT |
 
 两版均在常规国内规则集之前匹配专属服务。Clash 的海外 DNS 跟随兜底组。Shadowrocket 的海外 DoH 使用 `#proxy`，经首页当前节点转发，使用配置模式前先在首页选中已验证可用的节点。Clash 使用 SukkaW 和 MetaCubeX CN，Shadowrocket 使用 SukkaW 和同源的 ChinaMax_Domain。Shadowrocket 的 iCloud 规则放在 Apple 规则之前，以便命中专属策略组。

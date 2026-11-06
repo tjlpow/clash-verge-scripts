@@ -56,7 +56,7 @@ Shadowrocket 按域名和 IP 分流。远程规则集随配置更新，自动测
 | 出口检测站点 | browserleaks.com、whoer.net 和 ipinfo.io 走 Proxy 组 |
 | 未匹配流量 | 独立的兜底组，可选自动测速、地区组、单个节点、REJECT 或 DIRECT |
 
-两版均在常规国内规则集之前匹配专属服务，海外 DNS 查询配置为跟随兜底组。Clash 使用 SukkaW 和 MetaCubeX CN，Shadowrocket 使用 SukkaW 和同源的 ChinaMax_Domain。Shadowrocket 的 iCloud 规则放在 Apple 规则之前，以便命中专属策略组。
+两版均在常规国内规则集之前匹配专属服务。Clash 的海外 DNS 跟随兜底组。Shadowrocket 的海外 DoH 使用 `#proxy`，经首页当前节点转发，使用配置模式前先在首页选中已验证可用的节点。Clash 使用 SukkaW 和 MetaCubeX CN，Shadowrocket 使用 SukkaW 和同源的 ChinaMax_Domain。Shadowrocket 的 iCloud 规则放在 Apple 规则之前，以便命中专属策略组。
 
 ## 更新流程
 

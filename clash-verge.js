@@ -34,7 +34,8 @@
 //
 // 「🐟 Fallback」独立选择未匹配流量的节点，默认自动测速；国内AI固定直连。
 // bilibili 默认直连；🐟 Fallback 和 iCloud 提供手动 DIRECT 选项，其他代理组禁止直连。
-// Claude 组只列单个节点和 REJECT，首次默认 REJECT；使用前手选稳定的 TCP 节点。
+// Claude 组可选 🚀 main、单个节点或 REJECT，首次默认 REJECT。
+// Claude / 🐟 Fallback 选择 🚀 main 后跟随主组；固定出口请直接选择稳定的 TCP 节点。
 // Claude 专属域名/IP 与进程先于通用 AI；共享监测域名保留原规则，广告拦截仍优先。
 // AI 规则集、AI 应用及终端专用入口拦截业务 UDP/QUIC，国内模型的 TCP 请求直连。
 // 机场隧道协议由节点决定；AI 组应选用 Trojan、AnyTLS 等 TCP 节点。
@@ -553,25 +554,25 @@ function main(config) {
     }
   }
 
-  // 独立兜底组：不引用主代理组，选择不会随 🚀 main 的手动切换而变化。
+  // 兜底组可单独选节点，也可手选 🚀 main 跟随主组；保留原默认顺序。
   let fallbackName = "🐟 Fallback";
   for (let i = 2; takenNames.has(fallbackName); i++) fallbackName = `🐟 Fallback-${i}`;
   takenNames.add(fallbackName);
   const fallbackGroup = {
     name: fallbackName,
     type: "select",
-    proxies: [...autoResolvedNames, ...nodeNames, "REJECT"]
+    proxies: [...autoResolvedNames, ...nodeNames, "REJECT", ...(hasMainGroup ? [MAIN_GROUP] : [])]
   };
   if (providerMode) fallbackGroup.use = providerNames;
   // 没有主组时拒绝代理连接，不能借用可手动直连的兜底组作为 AI 的上游。
   const defaultProxy = hasMainGroup ? MAIN_GROUP : "REJECT";
 
-  // 只展开订阅节点，避免跟随主组或自动测速切换出口；首次保持拒绝。
+  // 默认拒绝，可手选单个节点固定出口，或选择 🚀 main 跟随主组。
   let claudeName = "Claude";
   for (let i = 2; takenNames.has(claudeName); i++) claudeName = `Claude-${i}`;
   takenNames.add(claudeName);
   const claudeGroup = {
-    name: claudeName, type: "select", proxies: ["REJECT", ...nodeNames],
+    name: claudeName, type: "select", proxies: ["REJECT", ...(hasMainGroup ? [MAIN_GROUP] : []), ...nodeNames],
     "disable-udp": true
   };
   if (providerNames.length) claudeGroup.use = providerNames;

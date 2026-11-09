@@ -59,16 +59,17 @@ Shadowrocket 按域名和 IP 分流。远程规则集随配置更新，自动测
 | 哔哩哔哩 | bilibili 组，默认直连 |
 | 国内服务 | 国内域名规则集或中国 IP 命中后直连 |
 | 出口检测站点 | browserleaks.com、whoer.net 和 ipinfo.io 走 `🚀 main` 组 |
-| 未匹配流量 | 独立的 `🐟 Fallback` 组，可选自动测速、地区组、单个节点、REJECT 或 DIRECT |
+| 未匹配流量 | 独立的 `🐟 Fallback` 组，可选 `🚀 main`、自动测速、地区组、单个节点、REJECT 或 DIRECT |
 
 两版均在常规国内规则集之前匹配专属服务。Clash 的海外 DNS 跟随 `🐟 Fallback` 组。Shadowrocket 的海外 DoH 使用 `#proxy`，经首页当前节点转发，使用配置模式前先在首页选中已验证可用的节点。Clash 使用 SukkaW 和 MetaCubeX CN，Shadowrocket 使用 SukkaW 和同源的 ChinaMax_Domain。Shadowrocket 的 iCloud 规则放在 Apple 规则之前，以便命中专属策略组。
 
 ## Claude 固定出口
 
-- **首次选择**　两版的 `Claude` 组初始为 `REJECT`，使用前手选一个稳定的 TCP 节点。组内只列单个节点和 REJECT，不引用主组或自动测速组。
+- **首次选择**　两版的 `Claude` 组初始为 `REJECT`，使用前手选一个稳定的 TCP 节点。组内可选 `🚀 main`、单个节点和 REJECT。
 - **匹配顺序**　广告、本地和 AI UDP 拦截 → 国内 AI 直连 → Claude 专属规则 → 其他国外 AI → 普通国内规则 → 兜底。国内模型优先直连，包括 Claude Code 中调用已收录的国内 API。
 - **Clash 进程**　Claude App 和可识别的 `claude` 进程也走 Claude 组。Terminal、Cursor 中访问 Claude 专属域名走 Claude 组，其余请求保留原来的 AI 策略；本机终端入口遵循相同例外。
 - **共享服务**　Sentry、Intercom、Statsig、GitHub、npm 等共享域名保留原分流；Clash 能识别为 Claude 进程的请求由进程规则处理。Shadowrocket 按域名和 IP 匹配，无法据此保证所有共享服务都使用 Claude 出口。广告拦截保持优先。
+- **跟随主组**　`Claude` 和 `🐟 Fallback` 选择 `🚀 main` 后，出口随主组的选择变化；需要固定出口时，直接选择单个节点。
 - **出口边界**　手选只能固定节点选择；节点自身更换出口 IP 时，脚本无法固定该 IP。选择 REJECT、节点失效或无可用节点时，匹配的 Claude 请求不会自动改为直连。
 
 专属域名范围参考 [Claude Code 网络要求](https://code.claude.com/docs/en/network-config)，并保留已核对的 Claude 域名、认证/CDN 别名和 Anthropic 地址范围。第三方模型网关按其实际域名匹配。

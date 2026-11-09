@@ -62,6 +62,14 @@ Shadowrocket 按域名和 IP 分流。远程规则集随配置更新，自动测
 
 两版均在常规国内规则集之前匹配专属服务。Clash 的海外 DNS 跟随 `🐟 Fallback` 组。Shadowrocket 的海外 DoH 使用 `#proxy`，经首页当前节点转发，使用配置模式前先在首页选中已验证可用的节点。Clash 使用 SukkaW 和 MetaCubeX CN，Shadowrocket 使用 SukkaW 和同源的 ChinaMax_Domain。Shadowrocket 的 iCloud 规则放在 Apple 规则之前，以便命中专属策略组。
 
+## AI 请求仅使用 TCP
+
+两版在国内外 AI 规则之前拦截匹配的 UDP 请求，覆盖 QUIC。支持回退的应用会改用 TCP，国内 AI 的 TCP 请求继续直连。Clash 同时覆盖 Terminal、Cursor、Claude 进程和本机终端入口 `127.0.0.1:7898`。
+
+此限制针对 AI 业务请求。机场隧道的传输协议由所选节点决定，`🤖 AI` 组请直接选择已确认使用 TCP 的 Trojan、AnyTLS 等节点。Hysteria2、TUIC 等节点会用 UDP 传输隧道，即使业务请求本身使用 TCP。
+
+Shadowrocket 的 AI UDP 拦截使用逻辑规则引用远程 AI 规则集。导入当天配置后，在手机端核对规则集成功加载、AI 对话可用及 UDP 拦截记录。
+
 ## 更新流程
 
 - **Clash Verge**　编辑本机 `Script.js`，完成检查后提交到仓库的 `clash-verge.js`，再提示用户自行重启并验证。

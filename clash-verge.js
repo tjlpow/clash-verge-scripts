@@ -34,6 +34,8 @@
 //
 // 「🐟 Fallback」独立选择未匹配流量的节点，默认自动测速；国内AI固定直连。
 // bilibili 默认直连；🐟 Fallback 和 iCloud 提供手动 DIRECT 选项，其他代理组禁止直连。
+// AI 规则集、AI 应用及终端专用入口拦截业务 UDP/QUIC，国内模型的 TCP 请求直连。
+// 机场隧道协议由节点决定；AI 组应选用 Trojan、AnyTLS 等 TCP 节点。
 // 代理规则附带 REJECT 保护，防止不支持 UDP 等情况落入后面的直连规则。
 // Terminal / Cursor 的交互终端由 terminal-ai-proxy.zsh 配置本机 HTTP 代理；
 // 已打开的终端需 source 该文件。不遵循代理变量的命令仍依赖 TUN。
@@ -587,6 +589,7 @@ function main(config) {
     options.push(defaultProxy, ...autoResolvedNames, ...nodeNames, "REJECT");
 
     const group = { "name": name, "type": "select", "proxies": options };
+    if (rs.provider === "ai-global") group["disable-udp"] = true;
     if (providerNames.length) group["use"] = providerNames;
     providerGroups.push(group);
   }
@@ -730,6 +733,13 @@ function main(config) {
     `PROCESS-NAME-REGEX,${app.process},${aiPolicy}`
   ]);
 
+  // 在国内 AI 直连及应用分流前拦截业务 UDP，防止 QUIC 提前命中直连。
+  // 网络条件放在前面，TCP 请求不再检查这些拦截条件。
+  const aiUdpRejectRules = [...domesticAIRules, ...overseasAIRules, ...appRules].map(rule => {
+    const matcher = rule.slice(0, rule.lastIndexOf(","));
+    return `AND,((NETWORK,udp),(${matcher})),REJECT`;
+  });
+
   // 本机 HTTP/SOCKS 规则入口供终端子进程使用。不能设置 proxy: aiPolicy，
   // 否则直接绑定节点会跳过国内模型例外。Shell 引用见 terminal-ai-proxy.zsh。
   const listeners = (config.listeners || []).filter(listener => listener.name !== TERMINAL_AI_NAME);
@@ -747,7 +757,9 @@ function main(config) {
   config["sub-rules"] = {
     ...(config["sub-rules"] || {}),
     [TERMINAL_AI_NAME]: [
-      ...rejectRules, ...localRules, ...domesticAIRules,
+      ...rejectRules, ...localRules,
+      "NETWORK,udp,REJECT",
+      ...domesticAIRules,
       ...failClosedRules([`MATCH,${aiPolicy}`])
     ]
   };
@@ -761,13 +773,14 @@ function main(config) {
 
   // ------------------------------------------------------------
   // 7. 合并规则，覆盖订阅原有的规则列表
-  //    顺序：广告 > 本地 > 国内AI > 代理例外 > 🤖 AI/应用 > Apple/小米
+  //    顺序：广告 > 本地 > AI UDP 拦截 > 国内AI > 代理例外 > 🤖 AI/应用 > Apple/小米
   //         > 站点/iCloud/Google > 微信 > 国内域名 > Telegram IP > 国内IP > 兜底。
   //    Google 放在 AI 规则集之后，确保 gemini.google.com 仍优先归入「🤖 AI」。
   // ------------------------------------------------------------
   config.rules = [
     ...rejectRules,
     ...localRules,
+    ...aiUdpRejectRules,
     ...domesticAIRules,
     ...failClosedRules(proxyExceptionRules),
     ...failClosedRules(overseasAIRules),

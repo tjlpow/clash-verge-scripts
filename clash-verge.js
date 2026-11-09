@@ -16,7 +16,7 @@
 // Clash Verge 外部脚本
 //   国内规则集自动更新 + 直连补充 + 防 DNS 泄漏 + 广告拦截
 //   + YouTube / X / bilibili / 🤖 AI / Telegram / iCloud / 🐟 Fallback 独立策略组
-//   + Terminal / Cursor / Claude 走「🤖 AI」，已收录国内模型固定直连
+//   + Claude 独立手选节点；Terminal / Cursor 其余请求走「🤖 AI」，国内模型固定直连
 //   + Auto / 低倍率 / 分国家 自动测速子组（hidden，只做备选项）
 //
 // ▍两种运行模式，看有没有 proxy-providers 自动切换：
@@ -34,6 +34,8 @@
 //
 // 「🐟 Fallback」独立选择未匹配流量的节点，默认自动测速；国内AI固定直连。
 // bilibili 默认直连；🐟 Fallback 和 iCloud 提供手动 DIRECT 选项，其他代理组禁止直连。
+// Claude 组只列单个节点和 REJECT，首次默认 REJECT；使用前手选稳定的 TCP 节点。
+// Claude 专属域名/IP 与进程先于通用 AI；共享监测域名保留原规则，广告拦截仍优先。
 // AI 规则集、AI 应用及终端专用入口拦截业务 UDP/QUIC，国内模型的 TCP 请求直连。
 // 机场隧道协议由节点决定；AI 组应选用 Trojan、AnyTLS 等 TCP 节点。
 // 代理规则附带 REJECT 保护，防止不支持 UDP 等情况落入后面的直连规则。
@@ -62,6 +64,21 @@ const AI_APPS = [
   { name: "Terminal", path: "(^|/)Terminal\\.app/Contents/", process: "^Terminal$" },
   { name: "Cursor", path: "(^|/)Cursor\\.app/Contents/", process: "^(Cursor|cursor)( Helper.*)?$" },
   { name: "Claude", path: "(^|/)Claude\\.app/Contents/", process: "^(Claude|claude)( Helper.*)?$" }
+];
+// Claude 自有域名及明确的认证/CDN 别名。共享 Sentry、Intercom 等不整体划入本组。
+// 网络要求：https://code.claude.com/docs/en/network-config
+const CLAUDE_DOMAIN_MATCHERS = [
+  "DOMAIN-SUFFIX,anthropic.com", "DOMAIN-SUFFIX,claude.ai",
+  "DOMAIN-SUFFIX,claude.com", "DOMAIN-SUFFIX,clau.de",
+  "DOMAIN-SUFFIX,claudemcpclient.com", "DOMAIN-SUFFIX,claudemcpcontent.com",
+  "DOMAIN-SUFFIX,claudeusercontent.com",
+  "DOMAIN,servd-anthropic-website.b-cdn.net",
+  "DOMAIN,anthropic.com.cdn.cloudflare.net", "DOMAIN,anthropic.auth0.com",
+  "DOMAIN,anthropic-com.ghost.io"
+];
+// 与现有 AI 规则集中的 Anthropic 地址范围一致，不主动解析其他域名。
+const CLAUDE_IP_MATCHERS = [
+  "IP-CIDR,160.79.104.0/21", "IP-CIDR6,2607:6bc0::/32", "IP-ASN,399358"
 ];
 const TERMINAL_AI_PORT = 7898;
 const TERMINAL_AI_NAME = "terminal-ai";
@@ -371,7 +388,12 @@ function buildAutoGroup(name, spec, providerNames, nodeNames) {
 // 代理策略因不支持 UDP 等原因被内核跳过时，立即拒绝同一匹配条件。
 // 不能让连接继续落到后面的国内直连规则或内核默认出口。
 function failClosedRules(rules) {
-  return rules.flatMap(rule => [rule, `${rule.slice(0, rule.lastIndexOf(",") + 1)}REJECT`]);
+  return rules.flatMap(rule => {
+    const parts = rule.split(",");
+    const policyIndex = parts.length - (parts[parts.length - 1] === "no-resolve" ? 2 : 1);
+    parts[policyIndex] = "REJECT";
+    return [rule, parts.join(",")];
+  });
 }
 
 // 清理代理策略可达的旧订阅子组，禁止通过嵌套分组或 direct 节点意外直连。
@@ -544,6 +566,16 @@ function main(config) {
   // 没有主组时拒绝代理连接，不能借用可手动直连的兜底组作为 AI 的上游。
   const defaultProxy = hasMainGroup ? MAIN_GROUP : "REJECT";
 
+  // 只展开订阅节点，避免跟随主组或自动测速切换出口；首次保持拒绝。
+  let claudeName = "Claude";
+  for (let i = 2; takenNames.has(claudeName); i++) claudeName = `Claude-${i}`;
+  takenNames.add(claudeName);
+  const claudeGroup = {
+    name: claudeName, type: "select", proxies: ["REJECT", ...nodeNames],
+    "disable-udp": true
+  };
+  if (providerNames.length) claudeGroup.use = providerNames;
+
   const newGroups = [];
   const resolvedNames = []; // 与 SITE_GROUPS 同序，存实际用上的组名
 
@@ -599,12 +631,13 @@ function main(config) {
     ...existingGroups,
     ...createdMainGroups,
     fallbackGroup,
+    claudeGroup,
     ...newGroups,
     ...providerGroups,
     ...autoGroups
   ];
   hardenProxyGroups(config["proxy-groups"], [
-    MAIN_GROUP, "GLOBAL", fallbackName,
+    MAIN_GROUP, "GLOBAL", fallbackName, claudeName,
     ...resolvedNames.filter((_, i) => SITE_GROUPS[i].defaultPolicy !== "DIRECT"),
     ...providerResolvedNames.filter(name => name !== "DIRECT")
   ], directNames);
@@ -728,14 +761,19 @@ function main(config) {
   // 国内AI已在应用规则前固定直连，包括 Claude Code 改用国内模型的情况。
   const overseasAIIndex = PROVIDER_GROUPS.findIndex(rs => rs.name === "🤖 AI");
   const aiPolicy = overseasAIIndex < 0 ? "REJECT" : providerResolvedNames[overseasAIIndex];
-  const appRules = AI_APPS.flatMap(app => [
-    `PROCESS-PATH-REGEX,${app.path},${aiPolicy}`,
-    `PROCESS-NAME-REGEX,${app.process},${aiPolicy}`
+  const buildAppRules = (apps, policy) => apps.flatMap(app => [
+    `PROCESS-PATH-REGEX,${app.path},${policy}`,
+    `PROCESS-NAME-REGEX,${app.process},${policy}`
   ]);
+  const claudeAppRules = buildAppRules(AI_APPS.filter(app => app.name === "Claude"), claudeName);
+  const appRules = buildAppRules(AI_APPS.filter(app => app.name !== "Claude"), aiPolicy);
+  const claudeDomainRules = CLAUDE_DOMAIN_MATCHERS.map(m => `${m},${claudeName}`);
+  const claudeIPRules = CLAUDE_IP_MATCHERS.map(m => `${m},${claudeName},no-resolve`);
+  const claudeRules = [...claudeDomainRules, ...claudeAppRules, ...claudeIPRules];
 
   // 在国内 AI 直连及应用分流前拦截业务 UDP，防止 QUIC 提前命中直连。
   // 网络条件放在前面，TCP 请求不再检查这些拦截条件。
-  const aiUdpRejectRules = [...domesticAIRules, ...overseasAIRules, ...appRules].map(rule => {
+  const aiUdpRejectRules = [...domesticAIRules, ...overseasAIRules, ...claudeDomainRules, ...claudeAppRules, ...appRules].map(rule => {
     const matcher = rule.slice(0, rule.lastIndexOf(","));
     return `AND,((NETWORK,udp),(${matcher})),REJECT`;
   });
@@ -760,6 +798,7 @@ function main(config) {
       ...rejectRules, ...localRules,
       "NETWORK,udp,REJECT",
       ...domesticAIRules,
+      ...failClosedRules(claudeRules),
       ...failClosedRules([`MATCH,${aiPolicy}`])
     ]
   };
@@ -773,7 +812,7 @@ function main(config) {
 
   // ------------------------------------------------------------
   // 7. 合并规则，覆盖订阅原有的规则列表
-  //    顺序：广告 > 本地 > AI UDP 拦截 > 国内AI > 代理例外 > 🤖 AI/应用 > Apple/小米
+  //    顺序：广告 > 本地 > AI UDP 拦截 > 国内AI > Claude > 代理例外 > 🤖 AI/应用 > Apple/小米
   //         > 站点/iCloud/Google > 微信 > 国内域名 > Telegram IP > 国内IP > 兜底。
   //    Google 放在 AI 规则集之后，确保 gemini.google.com 仍优先归入「🤖 AI」。
   // ------------------------------------------------------------
@@ -782,6 +821,7 @@ function main(config) {
     ...localRules,
     ...aiUdpRejectRules,
     ...domesticAIRules,
+    ...failClosedRules(claudeRules),
     ...failClosedRules(proxyExceptionRules),
     ...failClosedRules(overseasAIRules),
     ...failClosedRules(appRules),

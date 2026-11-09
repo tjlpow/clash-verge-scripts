@@ -7,7 +7,7 @@
 
 两版都用国内域名规则集和 `GEOIP,CN` 补齐直连，并为常用服务保留独立策略组。机场订阅链接是凭证，请保存在本机的 `Merge.yaml` 或 Shadowrocket App 中。
 
-两版的主代理组统一为 `🚀 main`，兜底组为 `🐟 Fallback`，国外 AI 组为 `🤖 AI`。
+两版的主代理组统一为 `🚀 main`，兜底组为 `🐟 Fallback`，国外 AI 组为 `🤖 AI`，Claude 使用独立的 `Claude` 组。
 
 ## Clash Verge
 
@@ -36,7 +36,7 @@ proxy-providers:
 
 脚本会用所有 provider 的节点重建策略组。没有 provider 时，脚本复用当前订阅的节点和策略组。
 
-Clash 版还按进程匹配 Terminal、Cursor、Claude 和微信。已匹配的国内 AI 请求优先直连。Terminal 和 Cursor 的交互终端可通过本机辅助脚本接入 `127.0.0.1:7898`，由这个入口区分国内 AI 和其他请求。辅助脚本仅在本机维护。
+Clash 版还按进程匹配 Terminal、Cursor、Claude 和微信。已匹配的国内 AI 请求优先直连。Terminal 和 Cursor 的交互终端可通过本机辅助脚本接入 `127.0.0.1:7898`，由这个入口区分国内 AI、Claude 和其他请求。辅助脚本仅在本机维护。
 
 ## Shadowrocket
 
@@ -44,7 +44,7 @@ Clash 版还按进程匹配 Terminal、Cursor、Claude 和微信。已匹配的�
 2. **匹配订阅名**　把 [Shadowrocket.conf](Shadowrocket.conf) 的 `[Proxy Group]` 中的 `Immtele` 和 `Shadowsocks` 换成 App 首页的真实订阅名。手选组用订阅名和 `use=true` 展开单个节点。增减订阅时同步更新组成员。
 3. **导入并测试**　把配置放到 iCloud Drive 的 Shadowrocket 文件夹。在手机上从文件导入并启用当天正式配置，核对「通用 → DNS 覆写」地址末尾为 `#proxy`。将全局路由设为「配置」，再测试常用服务和策略组。
 
-Shadowrocket 内置 `PROXY` 表示首页当前节点。各代理组初始选择 `PROXY`，先在首页选中已验证可用的节点，再按需在各组中改选 `🚀 main`、地区组或单个节点。bilibili 初始直连，`🐟 Fallback` 和 iCloud 可手选直连。
+Shadowrocket 内置 `PROXY` 表示首页当前节点。常规代理组初始选择 `PROXY`，先在首页选中已验证可用的节点，再按需在各组中改选 `🚀 main`、地区组或单个节点。bilibili 初始直连，`🐟 Fallback` 和 iCloud 可手选直连。
 
 Shadowrocket 按域名和 IP 分流。远程规则集随配置更新，自动测速子组在支持 `hidden=1` 的版本中隐藏。
 
@@ -53,7 +53,8 @@ Shadowrocket 按域名和 IP 分流。远程规则集随配置更新，自动测
 | 流量 | 策略 |
 | --- | --- |
 | 已收录的国内 AI | 固定直连，优先于国外 AI |
-| 国外 AI | `🤖 AI` 组 |
+| Claude 自有域名、认证/CDN 别名和 Anthropic 地址范围 | 独立的 `Claude` 手选组 |
+| 其他国外 AI | `🤖 AI` 组 |
 | YouTube、X、Google、Telegram、iCloud | 各自的策略组，iCloud 可手选直连 |
 | 哔哩哔哩 | bilibili 组，默认直连 |
 | 国内服务 | 国内域名规则集或中国 IP 命中后直连 |
@@ -62,11 +63,21 @@ Shadowrocket 按域名和 IP 分流。远程规则集随配置更新，自动测
 
 两版均在常规国内规则集之前匹配专属服务。Clash 的海外 DNS 跟随 `🐟 Fallback` 组。Shadowrocket 的海外 DoH 使用 `#proxy`，经首页当前节点转发，使用配置模式前先在首页选中已验证可用的节点。Clash 使用 SukkaW 和 MetaCubeX CN，Shadowrocket 使用 SukkaW 和同源的 ChinaMax_Domain。Shadowrocket 的 iCloud 规则放在 Apple 规则之前，以便命中专属策略组。
 
+## Claude 固定出口
+
+- **首次选择**　两版的 `Claude` 组初始为 `REJECT`，使用前手选一个稳定的 TCP 节点。组内只列单个节点和 REJECT，不引用主组或自动测速组。
+- **匹配顺序**　广告、本地和 AI UDP 拦截 → 国内 AI 直连 → Claude 专属规则 → 其他国外 AI → 普通国内规则 → 兜底。国内模型优先直连，包括 Claude Code 中调用已收录的国内 API。
+- **Clash 进程**　Claude App 和可识别的 `claude` 进程也走 Claude 组。Terminal、Cursor 中访问 Claude 专属域名走 Claude 组，其余请求保留原来的 AI 策略；本机终端入口遵循相同例外。
+- **共享服务**　Sentry、Intercom、Statsig、GitHub、npm 等共享域名保留原分流；Clash 能识别为 Claude 进程的请求由进程规则处理。Shadowrocket 按域名和 IP 匹配，无法据此保证所有共享服务都使用 Claude 出口。广告拦截保持优先。
+- **出口边界**　手选只能固定节点选择；节点自身更换出口 IP 时，脚本无法固定该 IP。选择 REJECT、节点失效或无可用节点时，匹配的 Claude 请求不会自动改为直连。
+
+专属域名范围参考 [Claude Code 网络要求](https://code.claude.com/docs/en/network-config)，并保留已核对的 Claude 域名、认证/CDN 别名和 Anthropic 地址范围。第三方模型网关按其实际域名匹配。
+
 ## AI 请求仅使用 TCP
 
 两版在国内外 AI 规则之前拦截匹配的 UDP 请求，覆盖 QUIC。支持回退的应用会改用 TCP，国内 AI 的 TCP 请求继续直连。Clash 同时覆盖 Terminal、Cursor、Claude 进程和本机终端入口 `127.0.0.1:7898`。
 
-此限制针对 AI 业务请求。机场隧道的传输协议由所选节点决定，`🤖 AI` 组请直接选择已确认使用 TCP 的 Trojan、AnyTLS 等节点。Hysteria2、TUIC 等节点会用 UDP 传输隧道，即使业务请求本身使用 TCP。
+此限制针对 AI 业务请求。机场隧道的传输协议由所选节点决定，`Claude` 和 `🤖 AI` 组请直接选择已确认使用 TCP 的 Trojan、AnyTLS 等节点。Hysteria2、TUIC 等节点会用 UDP 传输隧道，即使业务请求本身使用 TCP。
 
 Shadowrocket 的 AI UDP 拦截使用逻辑规则引用远程 AI 规则集。导入当天配置后，在手机端核对规则集成功加载、AI 对话可用及 UDP 拦截记录。
 
@@ -74,3 +85,4 @@ Shadowrocket 的 AI UDP 拦截使用逻辑规则引用远程 AI 规则集。导�
 
 - **Clash Verge**　编辑本机 `Script.js`，完成检查后提交到仓库的 `clash-verge.js`，再提示用户自行重启并验证。
 - **Shadowrocket**　编辑本机配置，文件名使用当天日期 `Shadowrocket-YYYY-MM-DD.conf`。当天更新沿用该文件名；清理诊断配置和旧修订，保留当天正式配置。检查后提交到仓库的 `Shadowrocket.conf`，再提示用户从 iCloud 导入并启用当天正式配置，核对 DNS 后在手机上测试。
+

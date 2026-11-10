@@ -3,7 +3,9 @@
 // 1. **修改**：直接编辑本机 profiles/Script.js，保留 Clash Verge 读取的文件名。
 // 2. **检查与提交**：检查后提交 tjlpow/clash-verge-scripts 的 clash-verge.js。
 //    单文件更新时核对远程 SHA，避免覆盖并发改动。
-// 3. **生效**：提示用户自行重启 Clash Verge 并验证分流。维护时只修改文件。
+// 3. **辅助进程**：首次安装或修改转发逻辑后，运行 node Script.js --install-claude-ipv4。
+//    辅助进程由 macOS 登录项常驻，只监听本机；更新时重载辅助进程。
+// 4. **生效**：提示用户自行重启 Clash Verge 并验证分流。维护时不重启或切换 Clash。
 //
 // ▍安装与用法见 README：
 //   https://github.com/tjlpow/clash-verge-scripts#clash-verge
@@ -37,6 +39,9 @@
 // Claude 组可选 🚀 main、单个节点或 REJECT，首次默认 REJECT。
 // Claude / 🐟 Fallback 选择 🚀 main 后跟随主组；固定出口请直接选择稳定的 TCP 节点。
 // Claude 专属域名/IP 与进程先于通用 AI；共享监测域名保留原规则，广告拦截仍优先。
+// 仅 Clash：Claude 请求先经本机 IPv4 转发层，动态查询 A 记录，再按 IP 经 Claude 组连接。
+// DNS 和连接均经 Claude 组；辅助进程或节点失效、无 A 记录时拒绝，不改走直连/IPv6。
+// 本机端口：7899 为 IPv4 转发层，7900 为绑定 Claude 组的回环上游；不要暴露到局域网。
 // AI 规则集、AI 应用及终端专用入口拦截业务 UDP/QUIC，国内模型的 TCP 请求直连。
 // 机场隧道协议由节点决定；AI 组应选用 Trojan、AnyTLS 等 TCP 节点。
 // 代理规则附带 REJECT 保护，防止不支持 UDP 等情况落入后面的直连规则。
@@ -83,6 +88,9 @@ const CLAUDE_IP_MATCHERS = [
 ];
 const TERMINAL_AI_PORT = 7898;
 const TERMINAL_AI_NAME = "terminal-ai";
+const CLAUDE_IPV4_RELAY_PORT = 7899;
+const CLAUDE_IPV4_UPSTREAM_PORT = 7900;
+const CLAUDE_IPV4_UPSTREAM_NAME = "claude-ipv4-upstream";
 
 // —— 需要独立选节点的站点 ——
 // name     : 生成的策略组名，会出现在「代理」页里
@@ -576,6 +584,11 @@ function main(config) {
     "disable-udp": true
   };
   if (providerNames.length) claudeGroup.use = providerNames;
+  // 内部 HTTP 出站只连接本机转发层，不加入主组候选，避免形成代理环路。
+  let claudeIPv4Name = "Claude IPv4 relay";
+  for (let i = 2; takenNames.has(claudeIPv4Name) || nodeNames.includes(claudeIPv4Name); i++) claudeIPv4Name = `Claude IPv4 relay-${i}`;
+  takenNames.add(claudeIPv4Name);
+  config.proxies.push({ name: claudeIPv4Name, type: "http", server: "127.0.0.1", port: CLAUDE_IPV4_RELAY_PORT, udp: false });
 
   const newGroups = [];
   const resolvedNames = []; // 与 SITE_GROUPS 同序，存实际用上的组名
@@ -766,10 +779,10 @@ function main(config) {
     `PROCESS-PATH-REGEX,${app.path},${policy}`,
     `PROCESS-NAME-REGEX,${app.process},${policy}`
   ]);
-  const claudeAppRules = buildAppRules(AI_APPS.filter(app => app.name === "Claude"), claudeName);
+  const claudeAppRules = buildAppRules(AI_APPS.filter(app => app.name === "Claude"), claudeIPv4Name);
   const appRules = buildAppRules(AI_APPS.filter(app => app.name !== "Claude"), aiPolicy);
-  const claudeDomainRules = CLAUDE_DOMAIN_MATCHERS.map(m => `${m},${claudeName}`);
-  const claudeIPRules = CLAUDE_IP_MATCHERS.map(m => `${m},${claudeName},no-resolve`);
+  const claudeDomainRules = CLAUDE_DOMAIN_MATCHERS.map(m => `${m},${claudeIPv4Name}`);
+  const claudeIPRules = CLAUDE_IP_MATCHERS.map(m => `${m},${claudeIPv4Name},no-resolve`);
   const claudeRules = [...claudeDomainRules, ...claudeAppRules, ...claudeIPRules];
 
   // 在国内 AI 直连及应用分流前拦截业务 UDP，防止 QUIC 提前命中直连。
@@ -781,17 +794,22 @@ function main(config) {
 
   // 本机 HTTP/SOCKS 规则入口供终端子进程使用。不能设置 proxy: aiPolicy，
   // 否则直接绑定节点会跳过国内模型例外。Shell 引用见 terminal-ai-proxy.zsh。
-  const listeners = (config.listeners || []).filter(listener => listener.name !== TERMINAL_AI_NAME);
-  if (listeners.some(listener => String(listener.port) === String(TERMINAL_AI_PORT))) {
-    throw new Error(`终端 AI 端口 ${TERMINAL_AI_PORT} 已被其他 listener 使用`);
-  }
-  if ([config.port, config["socks-port"], config["mixed-port"], config["redir-port"], config["tproxy-port"]]
-    .some(port => String(port) === String(TERMINAL_AI_PORT))) {
-    throw new Error(`终端 AI 端口 ${TERMINAL_AI_PORT} 与已有代理端口冲突`);
+  const managedNames = [TERMINAL_AI_NAME, CLAUDE_IPV4_UPSTREAM_NAME];
+  const listeners = (config.listeners || []).filter(listener => !managedNames.includes(listener.name));
+  const mainPorts = [config.port, config["socks-port"], config["mixed-port"], config["redir-port"], config["tproxy-port"]];
+  for (const port of [TERMINAL_AI_PORT, CLAUDE_IPV4_RELAY_PORT, CLAUDE_IPV4_UPSTREAM_PORT]) {
+    if (listeners.some(listener => String(listener.port) === String(port)) || mainPorts.some(value => String(value) === String(port))) {
+      throw new Error(`本机 AI 端口 ${port} 与已有代理入口冲突`);
+    }
   }
   config.listeners = [...listeners, {
     name: TERMINAL_AI_NAME, type: "mixed", listen: "127.0.0.1", port: TERMINAL_AI_PORT,
     rule: TERMINAL_AI_NAME
+  }, {
+    // 仅辅助进程使用：跳过主规则，防止按 Claude 域名/IP 再次回到转发层。
+    // 主入口已先处理国内 AI 直连，此入口仅负责选定节点的上游连接。
+    name: CLAUDE_IPV4_UPSTREAM_NAME, type: "mixed", listen: "127.0.0.1", port: CLAUDE_IPV4_UPSTREAM_PORT,
+    proxy: claudeName
   }];
   config["sub-rules"] = {
     ...(config["sub-rules"] || {}),
@@ -846,6 +864,12 @@ function main(config) {
     "nameserver": foreignNameservers.map(server => `${server}${dnsProxy}`)
   };
 
+  // 保留 TUN 域名嗅探；本机代理连接使用明确传入的目标，防止 IPv4 被 SNI 改回域名。
+  config.sniffer = {
+    ...(config.sniffer || {}),
+    "skip-src-address": [...new Set([...(config.sniffer?.["skip-src-address"] || []), "127.0.0.1/32"])]
+  };
+
   // 进程分流保护依赖内核运行，不能替代系统级出站控制。
   config.mode = "rule";
   config["find-process-mode"] = "always";
@@ -854,4 +878,217 @@ function main(config) {
   return config;
 }
 
+// —— Claude IPv4 辅助进程（Node.js；Clash 脚本引擎不会执行这一部分）——
+// CONNECT 的 TLS 数据原样转发，不解密对话。DNS 和目标连接都只经本机专用上游。
+function createClaudeIPv4Relay(options = {}) {
+  const http = require("node:http");
+  const https = require("node:https");
+  const net = require("node:net");
+  const tls = require("node:tls");
+  const upstreamPort = options.upstreamPort || CLAUDE_IPV4_UPSTREAM_PORT;
+  const listenPort = options.listenPort || CLAUDE_IPV4_RELAY_PORT;
+  const cache = new Map();
+  const pending = new Map();
+  const sockets = new Set();
+  const timeout = options.timeout || 10000;
 
+  function tunnel(host, port) {
+    return new Promise((resolve, reject) => {
+      // 始终连接回环地址；上游不可用时不尝试任何直连。
+      const socket = net.createConnection({ host: "127.0.0.1", port: upstreamPort });
+      const timer = setTimeout(() => fail(new Error("upstream timeout")), timeout);
+      let header = Buffer.alloc(0);
+      function fail(error) {
+        clearTimeout(timer); socket.destroy(); reject(error);
+      }
+      socket.once("error", fail);
+      socket.once("connect", () => socket.write(
+        `CONNECT ${host}:${port} HTTP/1.1\r\nHost: ${host}:${port}\r\nConnection: keep-alive\r\n\r\n`
+      ));
+      function onData(chunk) {
+        header = Buffer.concat([header, chunk]);
+        if (header.length > 16384) return fail(new Error("invalid upstream response"));
+        const end = header.indexOf("\r\n\r\n");
+        if (end < 0) return;
+        if (!/^HTTP\/1\.[01] 200(?: |\r)/.test(header.toString("ascii", 0, end))) {
+          return fail(new Error("upstream rejected CONNECT"));
+        }
+        clearTimeout(timer);
+        socket.removeListener("data", onData);
+        socket.removeListener("error", fail);
+        socket.pause();
+        if (header.length > end + 4) socket.unshift(header.subarray(end + 4));
+        resolve(socket);
+      }
+      socket.on("data", onData);
+      socket.once("end", () => { if (socket.listenerCount("data")) fail(new Error("upstream closed")); });
+    });
+  }
+
+  function doh(server, host) {
+    return new Promise((resolve, reject) => {
+      const agent = new https.Agent({ keepAlive: false });
+      // 覆盖唯一建连入口，HTTPS 客户端没有可用的系统直连路径。
+      agent.createConnection = (_opts, callback) => {
+        tunnel(server, 443).then(socket => {
+          const secure = tls.connect({ socket, servername: server, rejectUnauthorized: true, ALPNProtocols: ["http/1.1"] });
+          let called = false;
+          function done(error) { if (!called) { called = true; callback(error, error ? undefined : secure); } }
+          secure.once("secureConnect", () => done(null));
+          secure.once("error", done);
+        }, callback);
+      };
+      let settled = false;
+      let request;
+      const timer = setTimeout(() => finish(new Error("DNS timeout")), timeout);
+      function finish(error, value) {
+        if (settled) return;
+        settled = true; clearTimeout(timer); agent.destroy();
+        if (error) { if (request) request.destroy(); reject(error); } else resolve(value);
+      }
+      request = https.get({
+        hostname: server, path: `${server === "dns.google" ? "/resolve" : "/dns-query"}?name=${encodeURIComponent(host)}&type=A`,
+        headers: { Accept: "application/dns-json" }, agent
+      }, response => {
+        if (response.statusCode !== 200) { response.resume(); return finish(new Error("DNS HTTP error")); }
+        let size = 0;
+        const chunks = [];
+        response.on("data", chunk => {
+          size += chunk.length;
+          if (size > 262144) return finish(new Error("DNS response too large"));
+          chunks.push(chunk);
+        });
+        response.once("error", finish);
+        response.once("end", () => {
+          try {
+            const data = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+            if (data.Status !== 0) throw new Error("DNS lookup failed");
+            const answers = (data.Answer || []).filter(answer => answer.type === 1 && net.isIPv4(answer.data));
+            if (!answers.length) throw new Error("no IPv4 address");
+            const ttls = (data.Answer || []).filter(answer => answer.type === 1 || answer.type === 5)
+              .map(answer => Number(answer.TTL)).filter(value => Number.isFinite(value) && value >= 0);
+            finish(null, { addresses: [...new Set(answers.map(answer => answer.data))], ttl: ttls.length ? Math.min(...ttls) : 30 });
+          } catch (error) { finish(error); }
+        });
+      });
+      request.once("error", finish);
+    });
+  }
+
+  async function lookup(host) {
+    const saved = cache.get(host);
+    if (saved && saved.expires > Date.now()) return saved.addresses;
+    if (pending.has(host)) return pending.get(host);
+    const job = (async () => {
+      let result;
+      if (options.resolveA) result = await options.resolveA(host);
+      else {
+        // 两个加密 DNS 均走 Claude 组选定的机场；无本地 DNS / AAAA 回退。
+        for (const server of ["cloudflare-dns.com", "dns.google"]) {
+          try { result = await doh(server, host); break; } catch {}
+        }
+      }
+      if (!result || !Array.isArray(result.addresses) || !result.addresses.length || !result.addresses.every(net.isIPv4)) throw new Error("IPv4 DNS unavailable");
+      const ttlValue = Number(result.ttl);
+      const ttl = Number.isFinite(ttlValue) && ttlValue >= 0 ? Math.min(ttlValue, 300) : 30;
+      if (cache.size >= 512) cache.delete(cache.keys().next().value);
+      cache.set(host, { addresses: result.addresses, expires: Date.now() + ttl * 1000 });
+      return result.addresses;
+    })();
+    pending.set(host, job);
+    try { return await job; } finally { pending.delete(host); }
+  }
+
+  function publicIPv4(ip) {
+    if (!net.isIPv4(ip)) return false;
+    const [a, b] = ip.split(".").map(Number);
+    return !(a === 0 || a === 10 || a === 127 || a >= 224 ||
+      (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127));
+  }
+
+  const server = http.createServer((_request, response) => {
+    response.writeHead(405, { Connection: "close" }); response.end();
+  });
+  server.headersTimeout = timeout;
+  server.on("connection", socket => {
+    sockets.add(socket); socket.once("close", () => sockets.delete(socket));
+    socket.on("error", () => {});
+  });
+  server.on("connect", async (request, client, head) => {
+    client.pause();
+    let remote;
+    try {
+      if (request.url.length > 300 || !/^[A-Za-z0-9.-]+:\d{1,5}$/.test(request.url)) throw new Error("invalid target");
+      const split = request.url.lastIndexOf(":");
+      const host = request.url.slice(0, split).toLowerCase().replace(/\.$/, "");
+      const port = Number(request.url.slice(split + 1));
+      if (host.length > 253 || !host || !Number.isInteger(port) || port < 1 || port > 65535) throw new Error("invalid target");
+      const addresses = net.isIPv4(host) ? [host] : await lookup(host);
+      const eligible = addresses.filter(publicIPv4).slice(0, 4);
+      for (const ip of eligible) {
+        if (client.destroyed) return;
+        try { remote = await tunnel(ip, port); break; } catch {}
+      }
+      if (!remote) throw new Error("IPv4 upstream unavailable");
+      if (client.destroyed) { remote.destroy(); return; }
+      remote.on("error", () => client.destroy());
+      client.once("close", () => remote.destroy());
+      remote.once("close", () => client.destroy());
+      client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      if (head.length) remote.write(head);
+      client.pipe(remote); remote.pipe(client); client.resume(); remote.resume();
+    } catch {
+      if (remote) remote.destroy();
+      if (!client.destroyed) client.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    }
+  });
+  return {
+    server,
+    listen: () => new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(listenPort, "127.0.0.1", () => { server.removeListener("error", reject); resolve(server.address()); });
+    }),
+    close: () => new Promise(resolve => { for (const socket of sockets) socket.destroy(); server.close(resolve); })
+  };
+}
+
+function installClaudeIPv4Relay() {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const child = require("node:child_process");
+  if (process.platform !== "darwin") throw new Error("自动安装仅支持 macOS；其他系统请自行常驻运行 --claude-ipv4-relay");
+  const label = "local.clash-claude-ipv4";
+  const file = path.join(os.homedir(), "Library", "LaunchAgents", `${label}.plist`);
+  const executable = fs.existsSync("/opt/homebrew/bin/node") ? "/opt/homebrew/bin/node" : process.execPath;
+  const xml = value => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const text = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>${label}</string>
+<key>ProgramArguments</key><array><string>${xml(executable)}</string><string>${xml(__filename)}</string><string>--claude-ipv4-relay</string></array>
+<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer>
+<key>StandardOutPath</key><string>/tmp/clash-claude-ipv4.stdout.log</string>
+<key>StandardErrorPath</key><string>/tmp/clash-claude-ipv4.stderr.log</string>
+</dict></plist>\n`;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, text, { mode: 0o600 });
+  const domain = `gui/${process.getuid()}`;
+  child.spawnSync("/bin/launchctl", ["bootout", `${domain}/${label}`], { stdio: "ignore" });
+  const result = child.spawnSync("/bin/launchctl", ["bootstrap", domain, file], { encoding: "utf8" });
+  if (result.status !== 0) throw new Error(result.stderr || "辅助进程启动失败");
+  console.log(`已安装本机 IPv4 转发辅助进程（127.0.0.1:${CLAUDE_IPV4_RELAY_PORT}）；请自行重启 Clash Verge。`);
+}
+
+if (typeof module !== "undefined" && typeof require === "function") {
+  module.exports = { main, createClaudeIPv4Relay };
+  if (require.main === module) {
+    if (process.argv[2] === "--install-claude-ipv4") installClaudeIPv4Relay();
+    else if (process.argv[2] === "--claude-ipv4-relay") {
+      const relay = createClaudeIPv4Relay();
+      relay.listen().then(() => console.log(`Claude IPv4 relay listening on 127.0.0.1:${CLAUDE_IPV4_RELAY_PORT}`)).catch(error => { console.error(error.message); process.exitCode = 1; });
+      for (const signal of ["SIGTERM", "SIGINT"]) process.once(signal, () => relay.close().then(() => process.exit(0)));
+    } else console.log("用法：node Script.js --install-claude-ipv4 或 --claude-ipv4-relay");
+  }
+}

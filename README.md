@@ -60,6 +60,7 @@ Shadowrocket 按域名和 IP 分流。远程规则集随配置更新，自动测
 | --- | --- |
 | 已收录的国内 AI | 固定直连，优先于国外 AI |
 | Claude 自有域名、认证/CDN 别名和 Anthropic 地址范围 | Clash：`🧠 Claude` → 可选 `🌐 Claude Exit`；Shadowrocket：`Claude` |
+| Notion、GitHub | 默认跟随 `🚀 main`，优先于通用 AI、国内规则和兜底 |
 | 其他国外 AI | `🤖 AI` 组 |
 | YouTube、X、Google、Telegram、iCloud | 各自的策略组，iCloud 可手选直连 |
 | 哔哩哔哩 | bilibili 组，默认直连 |
@@ -67,7 +68,7 @@ Shadowrocket 按域名和 IP 分流。远程规则集随配置更新，自动测
 | 出口检测站点 | browserleaks.com、whoer.net 和 ipinfo.io 走 `🚀 main` 组 |
 | 未匹配流量 | 独立的 `🐟 Fallback` 组，可选 `🚀 main`、自动测速、地区组、单个节点、REJECT 或 DIRECT |
 
-两版均在常规国内规则集之前匹配专属服务。Clash 的海外 DNS 跟随 `🐟 Fallback` 组。Shadowrocket 的海外 DoH 使用 `#proxy`，经首页当前节点转发，使用配置模式前先在首页选中已验证可用的节点。Clash 使用 SukkaW 和 MetaCubeX CN，Shadowrocket 使用 SukkaW 和同源的 ChinaMax_Domain。Shadowrocket 的 iCloud 规则放在 Apple 规则之前，以便命中专属策略组。
+两版均在常规国内规则集之前匹配专属服务。Notion 和 GitHub 不另建策略组，随 `🚀 main` 切换；Clash 使用 GEOSITE，Shadowrocket 使用远程规则集，并补充 Notion 附件和状态域名。Clash 的 Claude 进程规则仍优先，因此可识别的 Claude 进程访问这些服务时继续使用 Claude 链路。Clash 的海外 DNS 跟随 `🐟 Fallback` 组。Shadowrocket 的海外 DoH 使用 `#proxy`，经首页当前节点转发，使用配置模式前先在首页选中已验证可用的节点。Clash 使用 SukkaW 和 MetaCubeX CN，Shadowrocket 使用 SukkaW 和同源的 ChinaMax_Domain。Shadowrocket 的 iCloud 规则放在 Apple 规则之前，以便命中专属策略组。
 
 Clash 的 AI 原始规则集继续自动更新：
 
@@ -113,7 +114,7 @@ Clash 使用两个手选组：
 
 - **出口隔离**　运行配置只保留 `ClaudeExit` 的链式副本，不输出原始节点，避免重名及直接使用；出口不加入普通组或中转候选。出口仅提供支持 TCP 的节点，过滤 Hysteria、Hysteria2、TUIC、WireGuard、Tailscale 和直连类型；中转也建议选用已验证的 TCP 节点。
 - **Shadowrocket**　保留单一 `Claude` 手选组，初始为 `REJECT`，可选 `🚀 main` 或单个节点。本次链式出口和本机 IPv4 转发仅适用于 Clash。
-- **匹配顺序**　广告、本地和 AI UDP 拦截 → 国内 AI 直连 → Claude 专属规则 → 其他国外 AI → 普通国内规则 → 兜底。国内模型优先直连，包括 Claude Code 中调用已收录的国内 API。
+- **匹配顺序**　广告、本地和 AI UDP 拦截 → 国内 AI 直连 → Claude 专属规则 → Notion／GitHub 跟随主组 → 其他国外 AI → 普通国内规则 → 兜底。国内模型优先直连，包括 Claude Code 中调用已收录的国内 API。
 - **Clash 进程**　Claude App 和可识别的 `claude` 进程也走上述中转／出口。Terminal、Cursor 中访问 Claude 专属域名走同一路径，其余请求使用完整主规则；本机终端入口与普通代理/TUN 保持一致。
 - **共享服务**　Sentry、Intercom、Statsig、GitHub、npm 等共享域名保留原分流；Clash 能识别为 Claude 进程的请求由进程规则处理。Shadowrocket 按域名和 IP 匹配，无法据此保证所有共享服务都使用 Claude 出口。广告拦截保持优先。
 - **IPv4 边界**　Clash 拒绝 IPv6 字面地址请求，不转换为 IPv4。机场若另行重定向出口，仍须以目标网站的实际回显验证。

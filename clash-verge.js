@@ -42,6 +42,7 @@
 // 🌐 Claude Exit 选出口后强制经中转连接，任何一环失败都断流；真正 REJECT 始终拒绝。
 // 🧠 Claude / 🐟 Fallback 选择 🚀 main 后跟随主组；固定出口请在 🌐 Claude Exit 手选节点。
 // Claude 专属域名/IP 与进程先于通用 AI；共享监测域名保留原规则，广告拦截仍优先。
+// Notion / GitHub 默认跟随 🚀 main，先于通用 AI、国内名单与兜底。
 // Claude 请求先经本机 IPv4 转发层，动态查询 A 记录，再按 IP 经选定的中转／出口连接。
 // DNS 和业务连接共用选定路径；辅助进程或任一节点失效、无 A 记录时拒绝，不回退。
 // 更新后自行重启 Clash，并在更名的 🧠 Claude 组中重新核对中转选择。
@@ -306,6 +307,10 @@ const DOMESTIC_RULE_SETS = [
 // 出口检测网站跟随主代理组，优先于国内通用名单和应用直连规则。
 // MetaCubeX CN 当前收录 browserleaks.com；明确例外可防止上游分类改变出口。
 const PROXY_EXCEPTION_DOMAINS = ["browserleaks.com", "whoer.net", "ipinfo.io"];
+
+// Notion / GitHub 跟随主组，覆盖官网、API、静态资源及下载域名。
+// 先于通用 AI、国内名单和兜底；Claude 专属规则仍优先。
+const MAIN_SERVICE_MATCHERS = ["GEOSITE,notion", "GEOSITE,github"];
 
 // —— 防 DNS 泄漏配置 ——
 // 默认解析经兜底组查询海外 DoH；DIRECT 出口使用国内 DoH 获取本地 CDN。
@@ -776,6 +781,7 @@ function main(config) {
     .map(rs => `RULE-SET,${rs.provider},${rs.policy}`);
   const fixedRules = FIXED_RULE_SETS.filter(rs => rs.policy !== "REJECT")
     .map(rs => `RULE-SET,${rs.provider},${rs.policy}`);
+  const mainServiceRules = MAIN_SERVICE_MATCHERS.map(matcher => `${matcher},${defaultProxy}`);
   const proxyExceptionRules = PROXY_EXCEPTION_DOMAINS.map(
     domain => `DOMAIN-SUFFIX,${domain},${defaultProxy}`
   );
@@ -877,7 +883,7 @@ function main(config) {
 
   // ------------------------------------------------------------
   // 7. 合并规则，覆盖订阅原有的规则列表
-  //    顺序：广告 > 本地 > AI UDP 拦截 > 国内AI > Claude > 代理例外 > 🤖 AI > Apple/小米
+  //    顺序：广告 > 本地 > AI UDP 拦截 > 国内AI > Claude > Notion/GitHub > 代理例外 > 🤖 AI > Apple/小米
   //         > 站点/iCloud/Google > 微信 > 国内域名 > Telegram IP > 国内IP > 兜底。
   //    Google 放在 AI 规则集之后，确保 gemini.google.com 仍优先归入「🤖 AI」。
   // ------------------------------------------------------------
@@ -887,6 +893,7 @@ function main(config) {
     ...aiUdpRejectRules,
     ...domesticAIRules,
     ...failClosedRules(claudeRules),
+    ...failClosedRules(mainServiceRules),
     ...failClosedRules(proxyExceptionRules),
     ...failClosedRules(overseasAIRules),
     ...fixedRules,

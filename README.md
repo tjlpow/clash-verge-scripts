@@ -7,7 +7,7 @@
 
 两版都用国内域名规则集和 `GEOIP,CN` 补齐直连，并为常用服务保留独立策略组。机场订阅链接是凭证，请保存在本机的 `Merge.yaml` 或 Shadowrocket App 中。
 
-两版的主代理组统一为 `🚀 main`，兜底组为 `🐟 Fallback`，国外 AI 组为 `🤖 AI`，Claude 使用独立的 `Claude` 组。
+两版的主代理组统一为 `🚀 main`，兜底组为 `🐟 Fallback`，国外 AI 组为 `🤖 AI`，Clash 的 Claude 使用 `🧠 Claude` 中转组和 `🌐 Claude Exit` 出口组；Shadowrocket 使用独立的 `Claude` 组。
 
 ## Clash Verge
 
@@ -36,13 +36,13 @@ proxy-providers:
 
 脚本会用所有 provider 的节点重建策略组。没有 provider 时，脚本复用当前订阅的节点和策略组。
 
-Clash 版按进程匹配 Claude 和微信。Terminal、Cursor 及其交互终端使用与其他应用相同的完整规则：国内模型直连、Claude 请求走 Claude 组、其他 AI 命中 AI 组，其余继续匹配站点组、国内通用规则和 Fallback。交互终端通过本机辅助脚本接入 `127.0.0.1:7898`，该入口不绑定单一策略或专用子规则。辅助脚本仅在本机维护。
+Clash 版按进程匹配 Claude 和微信。Terminal、Cursor 及其交互终端使用与其他应用相同的完整规则：国内模型直连、Claude 请求走专属中转／出口、其他 AI 命中 AI 组，其余继续匹配站点组、国内通用规则和 Fallback。交互终端通过本机辅助脚本接入 `127.0.0.1:7898`，该入口不绑定单一策略或专用子规则。辅助脚本仅在本机维护。
 
-Clash 版的 Claude 请求另经本机 IPv4 转发层：实时查询目标的 A 记录，再按 IPv4 地址通过 `Claude` 组选定的节点连接。TLS 数据原样转发，不解密对话。已收录国内 AI 仍先直连。
+Clash 版的 Claude 请求另经本机 IPv4 转发层：实时查询目标的 A 记录，再按 IPv4 地址通过选定的中转／出口连接。TLS 数据原样转发，不解密对话。已收录国内 AI 仍先直连。
 
 **首次启用 IPv4 转发**：安装 Node.js 后，在本机 `profiles` 目录运行 `node Script.js --install-claude-ipv4`。macOS 会安装随登录启动的本机辅助进程；然后由用户自行重启 Clash Verge。更新转发逻辑后重新运行同一命令。其他系统需自行常驻运行 `node Script.js --claude-ipv4-relay`。
 
-**本机端口**：`7899` 为 IPv4 转发层，`7900` 为 Clash 内绑定 Claude 组的专用上游，两者均只监听 `127.0.0.1`。解析仅经选定节点访问加密 DNS，按 TTL 缓存，最长 5 分钟；无 A 记录、辅助进程或节点不可用时断流，不退回直连或 IPv6。其他组的出口方式保持原样。本机回环代理连接跳过域名嗅探，避免已解析的 IPv4 被改回域名；TUN 的嗅探设置保留。
+**本机端口**：`7899` 为 IPv4 转发层，`7900` 为单跳上游，`7901` 为链式上游，均只监听 `127.0.0.1`。辅助进程只读本机 Clash 控制 socket，获取两组当前选择；查询失败即断流。DNS 与业务连接共用选定路径，解析按路径和 TTL 缓存，最长 5 分钟；无 A 记录、辅助进程或任一节点不可用时断流，不退回直连、IPv6 或单跳。其他组的出口方式保持原样。本机回环代理连接跳过域名嗅探，避免已解析的 IPv4 被改回域名；TUN 的嗅探设置保留。
 
 ## Shadowrocket
 
@@ -59,7 +59,7 @@ Shadowrocket 按域名和 IP 分流。远程规则集随配置更新，自动测
 | 流量 | 策略 |
 | --- | --- |
 | 已收录的国内 AI | 固定直连，优先于国外 AI |
-| Claude 自有域名、认证/CDN 别名和 Anthropic 地址范围 | 独立的 `Claude` 手选组 |
+| Claude 自有域名、认证/CDN 别名和 Anthropic 地址范围 | Clash：`🧠 Claude` → 可选 `🌐 Claude Exit`；Shadowrocket：`Claude` |
 | 其他国外 AI | `🤖 AI` 组 |
 | YouTube、X、Google、Telegram、iCloud | 各自的策略组，iCloud 可手选直连 |
 | 哔哩哔哩 | bilibili 组，默认直连 |
@@ -77,13 +77,30 @@ Clash 的 AI 原始规则集继续自动更新：
 
 ## Claude 出口选择
 
-- **首次选择**　两版的 `Claude` 组初始为 `REJECT`，使用前手选一个稳定的 TCP 节点。组内可选 `🚀 main`、单个节点和 REJECT。
+Clash 使用两个手选组：
+
+- **中转**　`🧠 Claude` 默认 `REJECT`。选择单个节点，或选择 `🚀 main` 跟随主组。
+- **出口**　`🌐 Claude Exit` 默认 `Exit Off`。选项以 `Exit | ` 开头，来自机场节点的独立副本，固定经 `🧠 Claude` 建连。
+- **关闭额外出口**　`Exit Off` 表示仅使用中转，与原生 `REJECT` 不同。隐藏的同名组仅作模式标记，不是实际出口。
+- **切换出口**　在 `🌐 Claude Exit` 中改选节点，新连接随之变化。已有长连接需重新建立。
+- **更新后选择**　原 `Claude` 组已更名为 `🧠 Claude`，重启后重新核对中转选择。默认 `Exit Off` 保持单跳模式。
+
+| 出口选择 | 中转状态 | 连接结果 |
+| --- | --- | --- |
+| `Exit Off` | 可用 | 中转 → 目标 |
+| `Exit Off` | 不可用或 `REJECT` | 断流 |
+| 出口节点可用 | 可用 | 中转 → 出口 → 目标 |
+| 出口节点不可用 | 任意 | 断流，不退回单跳 |
+| 已选出口节点 | 不可用或 `REJECT` | 断流，不直接连接出口 |
+| `REJECT` | 任意 | 断流 |
+
+- **独立副本**　出口副本不加入其他组；原始节点保持原有用途。出口仅提供支持 TCP 的节点，过滤 Hysteria、Hysteria2、TUIC、WireGuard、Tailscale 和直连类型；中转也建议选用已验证的 TCP 节点。
+- **Shadowrocket**　保留单一 `Claude` 手选组，初始为 `REJECT`，可选 `🚀 main` 或单个节点。本次链式出口和本机 IPv4 转发仅适用于 Clash。
 - **匹配顺序**　广告、本地和 AI UDP 拦截 → 国内 AI 直连 → Claude 专属规则 → 其他国外 AI → 普通国内规则 → 兜底。国内模型优先直连，包括 Claude Code 中调用已收录的国内 API。
-- **两版差异**　IPv4 转发仅在 Clash 版启用，覆盖命中 Claude 专属域名、IP 和进程规则的 TCP 请求；Shadowrocket 保留原分流，不附带本机辅助进程。IPv6 字面地址请求会拒绝，不转换为 IPv4。机场若另行重定向出口，仍须以目标网站的实际回显验证。
-- **Clash 进程**　Claude App 和可识别的 `claude` 进程也走 Claude 组。Terminal、Cursor 中访问 Claude 专属域名走 Claude 组，其余请求使用完整主规则；本机终端入口与普通代理/TUN 保持一致。
+- **Clash 进程**　Claude App 和可识别的 `claude` 进程也走上述中转／出口。Terminal、Cursor 中访问 Claude 专属域名走同一路径，其余请求使用完整主规则；本机终端入口与普通代理/TUN 保持一致。
 - **共享服务**　Sentry、Intercom、Statsig、GitHub、npm 等共享域名保留原分流；Clash 能识别为 Claude 进程的请求由进程规则处理。Shadowrocket 按域名和 IP 匹配，无法据此保证所有共享服务都使用 Claude 出口。广告拦截保持优先。
-- **跟随主组**　`Claude` 和 `🐟 Fallback` 选择 `🚀 main` 后，出口随主组的选择变化；需要固定出口时，直接选择单个节点。
-- **出口边界**　手选只能固定节点选择；节点自身更换出口 IP 时，脚本无法固定该 IP。选择 REJECT、节点失效或无可用节点时，匹配的 Claude 请求不会自动改为直连。
+- **IPv4 边界**　Clash 拒绝 IPv6 字面地址请求，不转换为 IPv4。机场若另行重定向出口，仍须以目标网站的实际回显验证。
+- **出口 IP**　手选固定节点选择；节点自身更换出口 IP 时，脚本无法固定该 IP。最后一跳节点决定实际出口。
 
 专属域名范围参考 [Claude Code 网络要求](https://code.claude.com/docs/en/network-config)，并保留已核对的 Claude 域名、认证/CDN 别名和 Anthropic 地址范围。第三方模型网关按其实际域名匹配。
 
@@ -91,7 +108,7 @@ Clash 的 AI 原始规则集继续自动更新：
 
 两版在国内外 AI 规则之前拦截匹配的 UDP 请求，覆盖 QUIC。支持回退的应用会改用 TCP，国内 AI 的 TCP 请求继续直连。Clash 保留 Claude 进程保护；Terminal、Cursor 和 `127.0.0.1:7898` 仅拦截匹配 AI 规则的 UDP，普通 UDP 请求继续按完整主规则分流。
 
-此限制针对 AI 业务请求。机场隧道的传输协议由所选节点决定，`Claude` 和 `🤖 AI` 组请直接选择已确认使用 TCP 的 Trojan、AnyTLS 等节点。Hysteria2、TUIC 等节点会用 UDP 传输隧道，即使业务请求本身使用 TCP。
+此限制针对 AI 业务请求。机场隧道的传输协议由所选节点决定，`🧠 Claude`（Shadowrocket 为 `Claude`）和 `🤖 AI` 组请直接选择已确认使用 TCP 的 Trojan、AnyTLS 等节点。Hysteria2、TUIC 等节点会用 UDP 传输隧道，即使业务请求本身使用 TCP。
 
 Shadowrocket 的 AI UDP 拦截使用逻辑规则引用远程 AI 规则集。导入当天配置后，在手机端核对规则集成功加载、AI 对话可用及 UDP 拦截记录。
 

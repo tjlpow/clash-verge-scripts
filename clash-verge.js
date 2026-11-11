@@ -18,7 +18,7 @@
 // Clash Verge 外部脚本
 //   国内规则集自动更新 + 直连补充 + 防 DNS 泄漏 + 广告拦截
 //   + YouTube / X / bilibili / 🤖 AI / Telegram / iCloud / 🐟 Fallback 独立策略组
-//   + Claude 独立手选节点；Terminal / Cursor 与其他应用共用完整规则，国内模型固定直连
+//   + 🧠 Claude 中转 / 🌐 Claude Exit 可选出口；国内模型固定直连，应用共用完整规则
 //   + Auto / 低倍率 / 分国家 自动测速子组（hidden，只做备选项）
 //
 // ▍两种运行模式，看有没有 proxy-providers 自动切换：
@@ -36,12 +36,15 @@
 //
 // 「🐟 Fallback」独立选择未匹配流量的节点，默认自动测速；国内AI固定直连。
 // bilibili 默认直连；🐟 Fallback 和 iCloud 提供手动 DIRECT 选项，其他代理组禁止直连。
-// Claude 组可选 🚀 main、单个节点或 REJECT，首次默认 REJECT。
-// Claude / 🐟 Fallback 选择 🚀 main 后跟随主组；固定出口请直接选择稳定的 TCP 节点。
+// 🧠 Claude 选择中转；🌐 Claude Exit 选择出口，默认 Exit Off（仅中转）。
+// 🌐 Claude Exit 选出口后强制经中转连接，任何一环失败都断流；真正 REJECT 始终拒绝。
+// 🧠 Claude / 🐟 Fallback 选择 🚀 main 后跟随主组；固定出口请在 🌐 Claude Exit 手选节点。
 // Claude 专属域名/IP 与进程先于通用 AI；共享监测域名保留原规则，广告拦截仍优先。
-// 仅 Clash：Claude 请求先经本机 IPv4 转发层，动态查询 A 记录，再按 IP 经 Claude 组连接。
-// DNS 和连接均经 Claude 组；辅助进程或节点失效、无 A 记录时拒绝，不改走直连/IPv6。
-// 本机端口：7899 为 IPv4 转发层，7900 为绑定 Claude 组的回环上游；不要暴露到局域网。
+// Claude 请求先经本机 IPv4 转发层，动态查询 A 记录，再按 IP 经选定的中转／出口连接。
+// DNS 和业务连接共用选定路径；辅助进程或任一节点失效、无 A 记录时拒绝，不回退。
+// 更新后自行重启 Clash，并在更名的 🧠 Claude 组中重新核对中转选择。
+// 本机端口：7899 为转发层，7900 为单跳上游，7901 为链式上游，均只监听回环地址。
+// 辅助进程只读本机控制 socket 获取两组选择，查询失败即断流，不猜测或绕过出口。
 // AI 规则集和 Claude 进程拦截业务 UDP/QUIC；普通终端流量不整体限制 UDP。
 // 机场隧道协议由节点决定；AI 组应选用 Trojan、AnyTLS 等 TCP 节点。
 // 代理规则附带 REJECT 保护，防止不支持 UDP 等情况落入后面的直连规则。
@@ -89,6 +92,12 @@ const TERMINAL_AI_NAME = "terminal-ai";
 const CLAUDE_IPV4_RELAY_PORT = 7899;
 const CLAUDE_IPV4_UPSTREAM_PORT = 7900;
 const CLAUDE_IPV4_UPSTREAM_NAME = "claude-ipv4-upstream";
+const CLAUDE_GROUP_NAME = "🧠 Claude";
+const CLAUDE_EXIT_GROUP_NAME = "🌐 Claude Exit";
+const CLAUDE_EXIT_OFF_NAME = "Exit Off";
+const CLAUDE_EXIT_PREFIX = "Exit | ";
+const CLAUDE_EXIT_UPSTREAM_NAME = "claude-exit-upstream";
+const CLAUDE_EXIT_UPSTREAM_PORT = 7901;
 
 // —— 需要独立选节点的站点 ——
 // name     : 生成的策略组名，会出现在「代理」页里
@@ -574,14 +583,55 @@ function main(config) {
   const defaultProxy = hasMainGroup ? MAIN_GROUP : "REJECT";
 
   // 默认拒绝，可手选单个节点固定出口，或选择 🚀 main 跟随主组。
-  let claudeName = "Claude";
-  for (let i = 2; takenNames.has(claudeName); i++) claudeName = `Claude-${i}`;
-  takenNames.add(claudeName);
+  const claudeName = CLAUDE_GROUP_NAME;
+  for (const name of [claudeName, CLAUDE_EXIT_GROUP_NAME, CLAUDE_EXIT_OFF_NAME]) {
+    if (takenNames.has(name) || nodeNames.includes(name)) throw new Error(`Claude 保留名称冲突：${name}`);
+    takenNames.add(name);
+  }
   const claudeGroup = {
     name: claudeName, type: "select", proxies: ["REJECT", ...(hasMainGroup ? [MAIN_GROUP] : []), ...nodeNames],
     "disable-udp": true
   };
   if (providerNames.length) claudeGroup.use = providerNames;
+  // 出口副本固定经 🧠 Claude 建连，不修改普通节点或其他分组。
+  const exitProviderNames = [];
+  const exitNodeNames = [];
+  if (providerMode) {
+    providerNames.forEach((sourceName, index) => {
+      const name = `claude-exit-${index + 1}`;
+      if (config["proxy-providers"][name]) throw new Error(`Claude 出口订阅名冲突：${name}`);
+      const source = config["proxy-providers"][sourceName];
+      const override = { ...(source.override || {}) };
+      // 高级表达式不能在固定覆写之后再次清除前置或更改保留前缀。
+      delete override["override-expr"];
+      Object.assign(override, {
+        "dialer-proxy": claudeName, udp: false,
+        "additional-prefix": `${CLAUDE_EXIT_PREFIX}${sourceName} | ${override["additional-prefix"] || ""}`
+      });
+      config["proxy-providers"][name] = {
+        ...source, path: source.type === "file" ? source.path : `./providers/claude-exit-${index + 1}.yaml`, override,
+        "exclude-type": [...new Set([...(source["exclude-type"] || "").split("|").filter(Boolean), "direct", "hysteria", "hysteria2", "tuic", "wireguard", "tailscale"])].join("|"),
+        "health-check": { ...(source["health-check"] || {}), enable: false }
+      };
+      exitProviderNames.push(name);
+    });
+  } else {
+    const tcpTypes = new Set(["ss", "ssr", "vmess", "vless", "trojan", "anytls", "http", "socks5", "ssh", "snell", "mieru", "sudoku"]);
+    const exitNodes = config.proxies.filter(node => tcpTypes.has(node.type)).map(node => {
+      const name = `${CLAUDE_EXIT_PREFIX}${node.name}`;
+      if (takenNames.has(name) || nodeNames.includes(name)) throw new Error(`Claude 出口节点名冲突：${name}`);
+      exitNodeNames.push(name);
+      return { ...node, name, "dialer-proxy": claudeName, udp: false };
+    });
+    config.proxies.push(...exitNodes);
+  }
+  // Exit Off 是模式标记，绝不作为实际网络出口；真正的 REJECT 始终断流。
+  const exitOffGroup = { name: CLAUDE_EXIT_OFF_NAME, type: "select", proxies: ["REJECT"], hidden: true };
+  const claudeExitGroup = {
+    name: CLAUDE_EXIT_GROUP_NAME, type: "select",
+    proxies: [CLAUDE_EXIT_OFF_NAME, "REJECT", ...exitNodeNames], "disable-udp": true
+  };
+  if (exitProviderNames.length) claudeExitGroup.use = exitProviderNames;
   // 内部 HTTP 出站只连接本机转发层，不加入主组候选，避免形成代理环路。
   let claudeIPv4Name = "Claude IPv4 relay";
   for (let i = 2; takenNames.has(claudeIPv4Name) || nodeNames.includes(claudeIPv4Name); i++) claudeIPv4Name = `Claude IPv4 relay-${i}`;
@@ -644,12 +694,14 @@ function main(config) {
     ...createdMainGroups,
     fallbackGroup,
     claudeGroup,
+    claudeExitGroup,
+    exitOffGroup,
     ...newGroups,
     ...providerGroups,
     ...autoGroups
   ];
   hardenProxyGroups(config["proxy-groups"], [
-    MAIN_GROUP, "GLOBAL", fallbackName, claudeName,
+    MAIN_GROUP, "GLOBAL", fallbackName, claudeName, CLAUDE_EXIT_GROUP_NAME, CLAUDE_EXIT_OFF_NAME,
     ...resolvedNames.filter((_, i) => SITE_GROUPS[i].defaultPolicy !== "DIRECT"),
     ...providerResolvedNames.filter(name => name !== "DIRECT")
   ], directNames);
@@ -797,10 +849,10 @@ function main(config) {
 
   // 终端入口不绑定单一策略或子规则，与 TUN / 普通代理入口共用完整主规则。
   // Shell 引用见 terminal-ai-proxy.zsh；国内、Claude、AI、站点组和兜底保持一致。
-  const managedNames = [TERMINAL_AI_NAME, CLAUDE_IPV4_UPSTREAM_NAME];
+  const managedNames = [TERMINAL_AI_NAME, CLAUDE_IPV4_UPSTREAM_NAME, CLAUDE_EXIT_UPSTREAM_NAME];
   const listeners = (config.listeners || []).filter(listener => !managedNames.includes(listener.name));
   const mainPorts = [config.port, config["socks-port"], config["mixed-port"], config["redir-port"], config["tproxy-port"]];
-  for (const port of [TERMINAL_AI_PORT, CLAUDE_IPV4_RELAY_PORT, CLAUDE_IPV4_UPSTREAM_PORT]) {
+  for (const port of [TERMINAL_AI_PORT, CLAUDE_IPV4_RELAY_PORT, CLAUDE_IPV4_UPSTREAM_PORT, CLAUDE_EXIT_UPSTREAM_PORT]) {
     if (listeners.some(listener => String(listener.port) === String(port)) || mainPorts.some(value => String(value) === String(port))) {
       throw new Error(`本机 AI 端口 ${port} 与已有代理入口冲突`);
     }
@@ -812,6 +864,9 @@ function main(config) {
     // 主入口已先处理国内 AI 直连，此入口仅负责选定节点的上游连接。
     name: CLAUDE_IPV4_UPSTREAM_NAME, type: "mixed", listen: "127.0.0.1", port: CLAUDE_IPV4_UPSTREAM_PORT,
     proxy: claudeName
+  }, {
+    name: CLAUDE_EXIT_UPSTREAM_NAME, type: "mixed", listen: "127.0.0.1", port: CLAUDE_EXIT_UPSTREAM_PORT,
+    proxy: CLAUDE_EXIT_GROUP_NAME
   }];
   // 清理旧版终端专用子规则，保留用户或订阅的其他子规则。
   const subRules = { ...(config["sub-rules"] || {}) };
@@ -876,22 +931,78 @@ function main(config) {
 
 // —— Claude IPv4 辅助进程（Node.js；Clash 脚本引擎不会执行这一部分）——
 // CONNECT 的 TLS 数据原样转发，不解密对话。DNS 和目标连接都只经本机专用上游。
+function readClaudeRoute(options = {}) {
+  const http = require("node:http");
+  const socketPath = options.socketPath || process.env.CLAUDE_CONTROLLER_SOCKET || `/var/run/clash-verge-service/users/${process.getuid()}/verge-mihomo.sock`;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let request;
+    const timer = setTimeout(() => finish(new Error("Claude route lookup timeout")), 2000);
+    function finish(error, value) {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
+      if (error) { if (request) request.destroy(); reject(error); } else resolve(value);
+    }
+    request = http.get({ socketPath, path: "/proxies", agent: false }, response => {
+      if (response.statusCode !== 200) { response.resume(); return finish(new Error("Claude route unavailable")); }
+      let size = 0;
+      const chunks = [];
+      response.on("data", chunk => {
+        size += chunk.length;
+        if (size > 2097152) return finish(new Error("invalid route response"));
+        chunks.push(chunk);
+      });
+      response.once("error", finish);
+      response.once("end", () => {
+        try {
+          const proxies = JSON.parse(Buffer.concat(chunks).toString("utf8")).proxies;
+          const exit = proxies?.[CLAUDE_EXIT_GROUP_NAME];
+          if (exit?.type !== "Selector" || typeof exit.now !== "string" || !exit.all?.includes(exit.now)) throw new Error("Claude Exit selection missing");
+          const transit = proxies?.[CLAUDE_GROUP_NAME];
+          if (transit?.type !== "Selector" || typeof transit.now !== "string" || !transit.all?.includes(transit.now)) throw new Error("Claude transit selection missing");
+          const trace = [];
+          const seen = new Set();
+          let name = CLAUDE_GROUP_NAME;
+          while (name) {
+            if (seen.has(name) || trace.length >= 12 || ["DIRECT", "COMPATIBLE", "REJECT", "REJECT-DROP", CLAUDE_EXIT_GROUP_NAME, CLAUDE_EXIT_OFF_NAME].includes(name)) throw new Error("Claude transit rejected");
+            seen.add(name);trace.push(name);
+            const proxy = proxies[name];
+            if (proxy && ["Direct", "Compatible", "Reject", "RejectDrop"].includes(proxy.type)) throw new Error("Claude transit rejected");
+            name = proxy?.now || null;
+          }
+          if (exit.now === "REJECT") throw new Error("Claude Exit rejected");
+          const off = exit.now === CLAUDE_EXIT_OFF_NAME;
+          if (!off && !exit.now.startsWith(CLAUDE_EXIT_PREFIX)) throw new Error("invalid Claude Exit selection");
+          finish(null, {
+            port: off ? CLAUDE_IPV4_UPSTREAM_PORT : CLAUDE_EXIT_UPSTREAM_PORT,
+            key: JSON.stringify([exit.now, trace])
+          });
+        } catch (error) { finish(error); }
+      });
+    });
+    request.once("error", finish);
+  });
+}
+
 function createClaudeIPv4Relay(options = {}) {
   const http = require("node:http");
   const https = require("node:https");
   const net = require("node:net");
   const tls = require("node:tls");
-  const upstreamPort = options.upstreamPort || CLAUDE_IPV4_UPSTREAM_PORT;
+  const selectRoute = options.selectRoute || (() => readClaudeRoute({ socketPath: options.controllerSocket }));
+  const singlePort = options.upstreamPort || CLAUDE_IPV4_UPSTREAM_PORT;
+  const chainPort = options.exitUpstreamPort || CLAUDE_EXIT_UPSTREAM_PORT;
+  function routePort(route) { return route.port === CLAUDE_IPV4_UPSTREAM_PORT ? singlePort : chainPort; }
   const listenPort = options.listenPort || CLAUDE_IPV4_RELAY_PORT;
   const cache = new Map();
   const pending = new Map();
   const sockets = new Set();
   const timeout = options.timeout || 10000;
 
-  function tunnel(host, port) {
+  function tunnel(host, port, route) {
     return new Promise((resolve, reject) => {
       // 始终连接回环地址；上游不可用时不尝试任何直连。
-      const socket = net.createConnection({ host: "127.0.0.1", port: upstreamPort });
+      const socket = net.createConnection({ host: "127.0.0.1", port: routePort(route) });
       const timer = setTimeout(() => fail(new Error("upstream timeout")), timeout);
       let header = Buffer.alloc(0);
       function fail(error) {
@@ -921,12 +1032,12 @@ function createClaudeIPv4Relay(options = {}) {
     });
   }
 
-  function doh(server, host) {
+  function doh(server, host, route) {
     return new Promise((resolve, reject) => {
       const agent = new https.Agent({ keepAlive: false });
       // 覆盖唯一建连入口，HTTPS 客户端没有可用的系统直连路径。
       agent.createConnection = (_opts, callback) => {
-        tunnel(server, 443).then(socket => {
+        tunnel(server, 443, route).then(socket => {
           const secure = tls.connect({ socket, servername: server, rejectUnauthorized: true, ALPNProtocols: ["http/1.1"] });
           let called = false;
           function done(error) { if (!called) { called = true; callback(error, error ? undefined : secure); } }
@@ -971,28 +1082,29 @@ function createClaudeIPv4Relay(options = {}) {
     });
   }
 
-  async function lookup(host) {
-    const saved = cache.get(host);
+  async function lookup(host, route) {
+    const cacheKey = `${route.key}\n${host}`;
+    const saved = cache.get(cacheKey);
     if (saved && saved.expires > Date.now()) return saved.addresses;
-    if (pending.has(host)) return pending.get(host);
+    if (pending.has(cacheKey)) return pending.get(cacheKey);
     const job = (async () => {
       let result;
       if (options.resolveA) result = await options.resolveA(host);
       else {
-        // 两个加密 DNS 均走 Claude 组选定的机场；无本地 DNS / AAAA 回退。
+        // 两个加密 DNS 均走选定的单跳／链式路径；无本地 DNS / AAAA 回退。
         for (const server of ["cloudflare-dns.com", "dns.google"]) {
-          try { result = await doh(server, host); break; } catch {}
+          try { result = await doh(server, host, route); break; } catch {}
         }
       }
       if (!result || !Array.isArray(result.addresses) || !result.addresses.length || !result.addresses.every(net.isIPv4)) throw new Error("IPv4 DNS unavailable");
       const ttlValue = Number(result.ttl);
       const ttl = Number.isFinite(ttlValue) && ttlValue >= 0 ? Math.min(ttlValue, 300) : 30;
       if (cache.size >= 512) cache.delete(cache.keys().next().value);
-      cache.set(host, { addresses: result.addresses, expires: Date.now() + ttl * 1000 });
+      cache.set(cacheKey, { addresses: result.addresses, expires: Date.now() + ttl * 1000 });
       return result.addresses;
     })();
-    pending.set(host, job);
-    try { return await job; } finally { pending.delete(host); }
+    pending.set(cacheKey, job);
+    try { return await job; } finally { pending.delete(cacheKey); }
   }
 
   function publicIPv4(ip) {
@@ -1020,11 +1132,14 @@ function createClaudeIPv4Relay(options = {}) {
       const host = request.url.slice(0, split).toLowerCase().replace(/\.$/, "");
       const port = Number(request.url.slice(split + 1));
       if (host.length > 253 || !host || !Number.isInteger(port) || port < 1 || port > 65535) throw new Error("invalid target");
-      const addresses = net.isIPv4(host) ? [host] : await lookup(host);
+      const route = await selectRoute();
+      const addresses = net.isIPv4(host) ? [host] : await lookup(host, route);
+      // 解析期间选项变化则拒绝本次请求，供应用重新建立连接，不跨模式回退。
+      if ((await selectRoute()).key !== route.key) throw new Error("Claude selection changed");
       const eligible = addresses.filter(publicIPv4).slice(0, 4);
       for (const ip of eligible) {
         if (client.destroyed) return;
-        try { remote = await tunnel(ip, port); break; } catch {}
+        try { remote = await tunnel(ip, port, route); break; } catch {}
       }
       if (!remote) throw new Error("IPv4 upstream unavailable");
       if (client.destroyed) { remote.destroy(); return; }
@@ -1115,7 +1230,7 @@ function installClaudeIPv4Relay() {
 }
 
 if (typeof module !== "undefined" && typeof require === "function") {
-  module.exports = { main, createClaudeIPv4Relay, syncAIServiceRules };
+  module.exports = { main, createClaudeIPv4Relay, syncAIServiceRules, readClaudeRoute };
   if (require.main === module) {
     if (process.argv[2] === "--install-claude-ipv4") installClaudeIPv4Relay();
     else if (process.argv[2] === "--claude-ipv4-relay") {

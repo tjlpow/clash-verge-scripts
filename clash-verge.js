@@ -10,7 +10,7 @@
 // ▍安装与用法见 README：
 //   https://github.com/tjlpow/clash-verge-scripts#clash-verge
 // ▍本机目录：~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/profiles/
-// ▍机场订阅链接仅保存在本机 Merge.yaml。
+// ▍机场订阅链接和出口账号密码仅保存在本机 Merge.yaml。
 // ▍内置脚本编辑器可能覆盖磁盘改动，修改后请避免保存旧编辑窗口。
 // ============================================================
 
@@ -36,7 +36,8 @@
 //
 // 「🐟 Fallback」独立选择未匹配流量的节点，默认自动测速；国内AI固定直连。
 // bilibili 默认直连；🐟 Fallback 和 iCloud 提供手动 DIRECT 选项，其他代理组禁止直连。
-// 🧠 Claude 选择中转；🌐 Claude Exit 选择出口，默认 Exit Off（仅中转）。
+// 🧠 Claude 选择中转；🌐 Claude Exit 仅列出 Merge.yaml 的 ClaudeExit 集合出口。
+// ClaudeExit 不加入普通分组；🌐 Claude Exit 默认 Exit Off（仅中转），保留原生 REJECT。
 // 🌐 Claude Exit 选出口后强制经中转连接，任何一环失败都断流；真正 REJECT 始终拒绝。
 // 🧠 Claude / 🐟 Fallback 选择 🚀 main 后跟随主组；固定出口请在 🌐 Claude Exit 手选节点。
 // Claude 专属域名/IP 与进程先于通用 AI；共享监测域名保留原规则，广告拦截仍优先。
@@ -96,6 +97,8 @@ const CLAUDE_GROUP_NAME = "🧠 Claude";
 const CLAUDE_EXIT_GROUP_NAME = "🌐 Claude Exit";
 const CLAUDE_EXIT_OFF_NAME = "Exit Off";
 const CLAUDE_EXIT_PREFIX = "Exit | ";
+// 本机 Merge.yaml 中的专用出口集合，不加入普通分组或中转候选。
+const CLAUDE_EXIT_PROVIDER_NAME = "ClaudeExit";
 const CLAUDE_EXIT_UPSTREAM_NAME = "claude-exit-upstream";
 const CLAUDE_EXIT_UPSTREAM_PORT = 7901;
 
@@ -436,9 +439,10 @@ function main(config) {
   // ------------------------------------------------------------
   // 1. 策略组
   // ------------------------------------------------------------
-  const providerNames = Object.keys(config["proxy-providers"] || {});
-  const providerMode = providerNames.length > 0;
-  providerNames.forEach(name => {
+  const allProviderNames = Object.keys(config["proxy-providers"] || {});
+  const providerNames = allProviderNames.filter(name => name !== CLAUDE_EXIT_PROVIDER_NAME);
+  const providerMode = allProviderNames.length > 0;
+  allProviderNames.forEach(name => {
     const provider = config["proxy-providers"][name];
     provider["exclude-type"] = [...new Set([
       ...(provider["exclude-type"] || "").split("|").filter(Boolean), "direct"
@@ -593,43 +597,31 @@ function main(config) {
     "disable-udp": true
   };
   if (providerNames.length) claudeGroup.use = providerNames;
-  // 出口副本固定经 🧠 Claude 建连，不修改普通节点或其他分组。
+  // 仅专用 ClaudeExit 集合提供出口，机场节点不加入出口候选。
   const exitProviderNames = [];
-  const exitNodeNames = [];
-  if (providerMode) {
-    providerNames.forEach((sourceName, index) => {
-      const name = `claude-exit-${index + 1}`;
-      if (config["proxy-providers"][name]) throw new Error(`Claude 出口订阅名冲突：${name}`);
-      const source = config["proxy-providers"][sourceName];
-      const override = { ...(source.override || {}) };
-      // 高级表达式不能在固定覆写之后再次清除前置或更改保留前缀。
-      delete override["override-expr"];
-      Object.assign(override, {
-        "dialer-proxy": claudeName, udp: false,
-        "additional-prefix": `${CLAUDE_EXIT_PREFIX}${sourceName} | ${override["additional-prefix"] || ""}`
-      });
-      config["proxy-providers"][name] = {
-        ...source, path: source.type === "file" ? source.path : `./providers/claude-exit-${index + 1}.yaml`, override,
-        "exclude-type": [...new Set([...(source["exclude-type"] || "").split("|").filter(Boolean), "direct", "hysteria", "hysteria2", "tuic", "wireguard", "tailscale"])].join("|"),
-        "health-check": { ...(source["health-check"] || {}), enable: false }
-      };
-      exitProviderNames.push(name);
+  const source = config["proxy-providers"]?.[CLAUDE_EXIT_PROVIDER_NAME];
+  if (source) {
+    const name = "claude-exit-1";
+    if (config["proxy-providers"][name]) throw new Error(`Claude 出口订阅名冲突：${name}`);
+    const override = { ...(source.override || {}) };
+    // 高级表达式不能在固定覆写之后再次清除前置或更改保留前缀。
+    delete override["override-expr"];
+    Object.assign(override, {
+      "dialer-proxy": claudeName, udp: false,
+      "additional-prefix": `${CLAUDE_EXIT_PREFIX}${CLAUDE_EXIT_PROVIDER_NAME} | ${override["additional-prefix"] || ""}`
     });
-  } else {
-    const tcpTypes = new Set(["ss", "ssr", "vmess", "vless", "trojan", "anytls", "http", "socks5", "ssh", "snell", "mieru", "sudoku"]);
-    const exitNodes = config.proxies.filter(node => tcpTypes.has(node.type)).map(node => {
-      const name = `${CLAUDE_EXIT_PREFIX}${node.name}`;
-      if (takenNames.has(name) || nodeNames.includes(name)) throw new Error(`Claude 出口节点名冲突：${name}`);
-      exitNodeNames.push(name);
-      return { ...node, name, "dialer-proxy": claudeName, udp: false };
-    });
-    config.proxies.push(...exitNodes);
+    config["proxy-providers"][name] = {
+      ...source, path: source.type === "file" ? source.path : "./providers/claude-exit-1.yaml", override,
+      "exclude-type": [...new Set([...(source["exclude-type"] || "").split("|").filter(Boolean), "direct", "hysteria", "hysteria2", "tuic", "wireguard", "tailscale"])].join("|"),
+      "health-check": { ...(source["health-check"] || {}), enable: false }
+    };
+    exitProviderNames.push(name);
   }
   // Exit Off 是模式标记，绝不作为实际网络出口；真正的 REJECT 始终断流。
   const exitOffGroup = { name: CLAUDE_EXIT_OFF_NAME, type: "select", proxies: ["REJECT"], hidden: true };
   const claudeExitGroup = {
     name: CLAUDE_EXIT_GROUP_NAME, type: "select",
-    proxies: [CLAUDE_EXIT_OFF_NAME, "REJECT", ...exitNodeNames], "disable-udp": true
+    proxies: [CLAUDE_EXIT_OFF_NAME, "REJECT"], "disable-udp": true
   };
   if (exitProviderNames.length) claudeExitGroup.use = exitProviderNames;
   // 内部 HTTP 出站只连接本机转发层，不加入主组候选，避免形成代理环路。

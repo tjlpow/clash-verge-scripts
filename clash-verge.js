@@ -70,10 +70,11 @@ const MAIN_GROUP_CANDIDATES = [
 ];
 
 // —— 应用分流 ——
-// 路径覆盖 App 包内的辅助进程；进程名补充 CLI 和安装路径变化。
+// 路径覆盖 App 辅助进程和原生 CLI；原生 CLI 的进程名是版本号，不能只匹配 claude。
+// 原生 CLI 安装在 ~/.local/share/claude/versions/，进程名补充传统 CLI 安装方式。
 // 国内AI规则先匹配，避免 Claude Code / Cursor 直接调用国内模型时绕路。
 const CLAUDE_APPS = [
-  { name: "Claude", path: "(^|/)Claude\\.app/Contents/", process: "^(Claude|claude)( Helper.*)?$" }
+  { name: "Claude", path: "(^|/)(Claude\\.app/Contents/|\\.local/share/claude/versions/[^/]+$)", process: "^(Claude|claude)( Helper.*)?$" }
 ];
 // Claude 自有域名及明确的认证/CDN 别名。共享 Sentry、Intercom 等不整体划入本组。
 // 网络要求：https://code.claude.com/docs/en/network-config

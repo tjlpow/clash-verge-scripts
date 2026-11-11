@@ -115,7 +115,7 @@ Clash 使用两个手选组：
 - **出口隔离**　运行配置只保留 `ClaudeExit` 的链式副本，不输出原始节点，避免重名及直接使用；出口不加入普通组或中转候选。出口仅提供支持 TCP 的节点，过滤 Hysteria、Hysteria2、TUIC、WireGuard、Tailscale 和直连类型；中转也建议选用已验证的 TCP 节点。
 - **Shadowrocket**　保留单一 `Claude` 手选组，初始为 `REJECT`，可选 `🚀 main` 或单个节点。本次链式出口和本机 IPv4 转发仅适用于 Clash。
 - **匹配顺序**　广告、本地和 AI UDP 拦截 → 国内 AI 直连 → Claude 专属规则 → Notion／GitHub 跟随主组 → 其他国外 AI → 普通国内规则 → 兜底。国内模型优先直连，包括 Claude Code 中调用已收录的国内 API。
-- **Clash 进程**　Claude App 和可识别的 `claude` 进程也走上述中转／出口。Terminal、Cursor 中访问 Claude 专属域名走同一路径，其余请求使用完整主规则；本机终端入口与普通代理/TUN 保持一致。
+- **Clash 进程**　Claude App、传统 `claude` 进程和原生 CLI 路径 `~/.local/share/claude/versions/` 都走上述中转／出口。原生 CLI 的进程名可能是版本号，按安装路径匹配，不依赖具体版本。Terminal、Cursor 中访问 Claude 专属域名走同一路径，其余请求使用完整主规则；本机终端入口与普通代理/TUN 保持一致。
 - **共享服务**　Sentry、Intercom、Statsig、GitHub、npm 等共享域名保留原分流；Clash 能识别为 Claude 进程的请求由进程规则处理。Shadowrocket 按域名和 IP 匹配，无法据此保证所有共享服务都使用 Claude 出口。广告拦截保持优先。
 - **IPv4 边界**　Clash 拒绝 IPv6 字面地址请求，不转换为 IPv4。机场若另行重定向出口，仍须以目标网站的实际回显验证。
 - **出口 IP**　手选固定节点选择；节点自身更换出口 IP 时，脚本无法固定该 IP。最后一跳节点决定实际出口。

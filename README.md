@@ -80,7 +80,7 @@ Clash 的 AI 原始规则集继续自动更新：
 Clash 使用两个手选组：
 
 - **中转**　`🧠 Claude` 默认 `REJECT`。选择单个节点，或选择 `🚀 main` 跟随主组。
-- **出口**　`🌐 Claude Exit` 默认 `Exit Off`。选项以 `Exit | ClaudeExit | ` 开头，仅来自本机 `Merge.yaml` 的 `ClaudeExit` 集合，固定经 `🧠 Claude` 建连。机场节点不列入出口候选。
+- **出口**　`🌐 Claude Exit` 默认 `Exit Off`。选项沿用本机 `Merge.yaml` 的 `ClaudeExit` 集合中配置的节点名称，例如 `ISP-Chain`，固定经 `🧠 Claude` 建连。机场节点不列入出口候选。
 - **关闭额外出口**　`Exit Off` 表示仅使用中转，与原生 `REJECT` 不同。隐藏的同名组仅作模式标记，不是实际出口。
 - **切换出口**　在 `🌐 Claude Exit` 中改选节点，新连接随之变化。已有长连接需重新建立。
 - **更新后选择**　原 `Claude` 组已更名为 `🧠 Claude`，重启后重新核对中转选择。默认 `Exit Off` 保持单跳模式。
@@ -91,7 +91,7 @@ Clash 使用两个手选组：
   ClaudeExit:
     type: inline
     payload:
-      - name: My-Exit
+      - name: ISP-Chain
         type: socks5
         server: "出口服务器地址"
         port: 12345
@@ -100,7 +100,7 @@ Clash 使用两个手选组：
         udp: false
 ```
 
-保存后自行重启 Clash，在 `🧠 Claude` 选择中转，在 `🌐 Claude Exit` 选择 `Exit | ClaudeExit | My-Exit`。以后更换地址或凭据仅修改此集合；账号密码只存本机，不提交仓库。未配置该集合时，出口组只保留 `Exit Off` 和 `REJECT`。
+保存后自行重启 Clash，在 `🧠 Claude` 选择中转，在 `🌐 Claude Exit` 选择 `ISP-Chain`。以后更换名称、地址或凭据仅修改此集合；账号密码只存本机，不提交仓库。未配置该集合时，出口组只保留 `Exit Off` 和 `REJECT`。
 
 | 出口选择 | 中转状态 | 连接结果 |
 | --- | --- | --- |
@@ -111,7 +111,7 @@ Clash 使用两个手选组：
 | 已选出口节点 | 不可用或 `REJECT` | 断流，不直接连接出口 |
 | `REJECT` | 任意 | 断流 |
 
-- **出口隔离**　`ClaudeExit` 的原始节点及链式副本均不加入普通组或中转候选。出口仅提供支持 TCP 的节点，过滤 Hysteria、Hysteria2、TUIC、WireGuard、Tailscale 和直连类型；中转也建议选用已验证的 TCP 节点。
+- **出口隔离**　运行配置只保留 `ClaudeExit` 的链式副本，不输出原始节点，避免重名及直接使用；出口不加入普通组或中转候选。出口仅提供支持 TCP 的节点，过滤 Hysteria、Hysteria2、TUIC、WireGuard、Tailscale 和直连类型；中转也建议选用已验证的 TCP 节点。
 - **Shadowrocket**　保留单一 `Claude` 手选组，初始为 `REJECT`，可选 `🚀 main` 或单个节点。本次链式出口和本机 IPv4 转发仅适用于 Clash。
 - **匹配顺序**　广告、本地和 AI UDP 拦截 → 国内 AI 直连 → Claude 专属规则 → 其他国外 AI → 普通国内规则 → 兜底。国内模型优先直连，包括 Claude Code 中调用已收录的国内 API。
 - **Clash 进程**　Claude App 和可识别的 `claude` 进程也走上述中转／出口。Terminal、Cursor 中访问 Claude 专属域名走同一路径，其余请求使用完整主规则；本机终端入口与普通代理/TUN 保持一致。

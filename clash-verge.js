@@ -37,6 +37,7 @@
 // 「🐟 Fallback」独立选择未匹配流量的节点，默认自动测速；国内AI固定直连。
 // bilibili 默认直连；🐟 Fallback 和 iCloud 提供手动 DIRECT 选项，其他代理组禁止直连。
 // 🧠 Claude 选择中转；🌐 Claude Exit 仅列出 Merge.yaml 的 ClaudeExit 集合出口。
+// 出口沿用 ClaudeExit 中的节点名称，不额外添加前缀；专用原节点不输出到运行配置。
 // ClaudeExit 不加入普通分组；🌐 Claude Exit 默认 Exit Off（仅中转），保留原生 REJECT。
 // 🌐 Claude Exit 选出口后强制经中转连接，任何一环失败都断流；真正 REJECT 始终拒绝。
 // 🧠 Claude / 🐟 Fallback 选择 🚀 main 后跟随主组；固定出口请在 🌐 Claude Exit 手选节点。
@@ -96,7 +97,6 @@ const CLAUDE_IPV4_UPSTREAM_NAME = "claude-ipv4-upstream";
 const CLAUDE_GROUP_NAME = "🧠 Claude";
 const CLAUDE_EXIT_GROUP_NAME = "🌐 Claude Exit";
 const CLAUDE_EXIT_OFF_NAME = "Exit Off";
-const CLAUDE_EXIT_PREFIX = "Exit | ";
 // 本机 Merge.yaml 中的专用出口集合，不加入普通分组或中转候选。
 const CLAUDE_EXIT_PROVIDER_NAME = "ClaudeExit";
 const CLAUDE_EXIT_UPSTREAM_NAME = "claude-exit-upstream";
@@ -604,17 +604,19 @@ function main(config) {
     const name = "claude-exit-1";
     if (config["proxy-providers"][name]) throw new Error(`Claude 出口订阅名冲突：${name}`);
     const override = { ...(source.override || {}) };
-    // 高级表达式不能在固定覆写之后再次清除前置或更改保留前缀。
+    // 高级表达式不能在固定覆写之后再次清除前置。
     delete override["override-expr"];
     Object.assign(override, {
       "dialer-proxy": claudeName, udp: false,
-      "additional-prefix": `${CLAUDE_EXIT_PREFIX}${CLAUDE_EXIT_PROVIDER_NAME} | ${override["additional-prefix"] || ""}`
+      "additional-prefix": override["additional-prefix"] || ""
     });
     config["proxy-providers"][name] = {
       ...source, path: source.type === "file" ? source.path : "./providers/claude-exit-1.yaml", override,
       "exclude-type": [...new Set([...(source["exclude-type"] || "").split("|").filter(Boolean), "direct", "hysteria", "hysteria2", "tuic", "wireguard", "tailscale"])].join("|"),
       "health-check": { ...(source["health-check"] || {}), enable: false }
     };
+    // 只保留链式副本，避免原节点与出口重名，并防止原节点被直接使用。
+    delete config["proxy-providers"][CLAUDE_EXIT_PROVIDER_NAME];
     exitProviderNames.push(name);
   }
   // Exit Off 是模式标记，绝不作为实际网络出口；真正的 REJECT 始终断流。
@@ -964,7 +966,7 @@ function readClaudeRoute(options = {}) {
           }
           if (exit.now === "REJECT") throw new Error("Claude Exit rejected");
           const off = exit.now === CLAUDE_EXIT_OFF_NAME;
-          if (!off && !exit.now.startsWith(CLAUDE_EXIT_PREFIX)) throw new Error("invalid Claude Exit selection");
+          if (!off && ["DIRECT", "COMPATIBLE", "REJECT-DROP"].includes(exit.now)) throw new Error("invalid Claude Exit selection");
           finish(null, {
             port: off ? CLAUDE_IPV4_UPSTREAM_PORT : CLAUDE_EXIT_UPSTREAM_PORT,
             key: JSON.stringify([exit.now, trace])

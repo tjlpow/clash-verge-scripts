@@ -18,7 +18,7 @@
 // Clash Verge 外部脚本
 //   国内规则集自动更新 + 直连补充 + 防 DNS 泄漏 + 广告拦截
 //   + YouTube / X / bilibili / 🤖 AI / Telegram / iCloud / 🐟 Fallback 独立策略组
-//   + Claude 独立手选节点；Terminal / Cursor 其余请求走「🤖 AI」，国内模型固定直连
+//   + Claude 独立手选节点；Terminal / Cursor 与其他应用共用完整规则，国内模型固定直连
 //   + Auto / 低倍率 / 分国家 自动测速子组（hidden，只做备选项）
 //
 // ▍两种运行模式，看有没有 proxy-providers 自动切换：
@@ -42,7 +42,7 @@
 // 仅 Clash：Claude 请求先经本机 IPv4 转发层，动态查询 A 记录，再按 IP 经 Claude 组连接。
 // DNS 和连接均经 Claude 组；辅助进程或节点失效、无 A 记录时拒绝，不改走直连/IPv6。
 // 本机端口：7899 为 IPv4 转发层，7900 为绑定 Claude 组的回环上游；不要暴露到局域网。
-// AI 规则集、AI 应用及终端专用入口拦截业务 UDP/QUIC，国内模型的 TCP 请求直连。
+// AI 规则集和 Claude 进程拦截业务 UDP/QUIC；普通终端流量不整体限制 UDP。
 // 机场隧道协议由节点决定；AI 组应选用 Trojan、AnyTLS 等 TCP 节点。
 // 代理规则附带 REJECT 保护，防止不支持 UDP 等情况落入后面的直连规则。
 // Terminal / Cursor 的交互终端由 terminal-ai-proxy.zsh 配置本机 HTTP 代理；
@@ -66,9 +66,7 @@ const MAIN_GROUP_CANDIDATES = [
 // —— 应用分流 ——
 // 路径覆盖 App 包内的辅助进程；进程名补充 CLI 和安装路径变化。
 // 国内AI规则先匹配，避免 Claude Code / Cursor 直接调用国内模型时绕路。
-const AI_APPS = [
-  { name: "Terminal", path: "(^|/)Terminal\\.app/Contents/", process: "^Terminal$" },
-  { name: "Cursor", path: "(^|/)Cursor\\.app/Contents/", process: "^(Cursor|cursor)( Helper.*)?$" },
+const CLAUDE_APPS = [
   { name: "Claude", path: "(^|/)Claude\\.app/Contents/", process: "^(Claude|claude)( Helper.*)?$" }
 ];
 // Claude 自有域名及明确的认证/CDN 别名。共享 Sentry、Intercom 等不整体划入本组。
@@ -680,6 +678,13 @@ function main(config) {
       proxy: defaultProxy
     };
   });
+  // 上游 AI 集含 Cursor 的整应用规则。原源继续自动更新，辅助进程仅过滤
+  // Cursor / Terminal 的 PROCESS 条目；域名/IP 及其他应用条目保持原样。
+  ruleProviders["ai-global-source"] = ruleProviders["ai-global"];
+  ruleProviders["ai-global"] = {
+    type: "file", behavior: "classical", format: "yaml",
+    path: "./profiles/ai-global-services.yaml", interval: 60
+  };
   config["rule-providers"] = { ...(config["rule-providers"] || {}), ...ruleProviders };
 
   // ------------------------------------------------------------
@@ -771,29 +776,27 @@ function main(config) {
     "PROCESS-NAME,WeChatAppEx Helper,DIRECT"
   ];
 
-  // 应用规则先于普通国内名单，避免辅助请求被共享 CDN 的直连规则抢走。
+  // Claude 进程规则先于普通国内名单，避免其辅助请求被共享 CDN 直连规则抢走。
+  // Terminal / Cursor 不设置整应用默认策略，其请求与其他应用共用完整规则。
   // 国内AI已在应用规则前固定直连，包括 Claude Code 改用国内模型的情况。
-  const overseasAIIndex = PROVIDER_GROUPS.findIndex(rs => rs.name === "🤖 AI");
-  const aiPolicy = overseasAIIndex < 0 ? "REJECT" : providerResolvedNames[overseasAIIndex];
   const buildAppRules = (apps, policy) => apps.flatMap(app => [
     `PROCESS-PATH-REGEX,${app.path},${policy}`,
     `PROCESS-NAME-REGEX,${app.process},${policy}`
   ]);
-  const claudeAppRules = buildAppRules(AI_APPS.filter(app => app.name === "Claude"), claudeIPv4Name);
-  const appRules = buildAppRules(AI_APPS.filter(app => app.name !== "Claude"), aiPolicy);
+  const claudeAppRules = buildAppRules(CLAUDE_APPS, claudeIPv4Name);
   const claudeDomainRules = CLAUDE_DOMAIN_MATCHERS.map(m => `${m},${claudeIPv4Name}`);
   const claudeIPRules = CLAUDE_IP_MATCHERS.map(m => `${m},${claudeIPv4Name},no-resolve`);
   const claudeRules = [...claudeDomainRules, ...claudeAppRules, ...claudeIPRules];
 
   // 在国内 AI 直连及应用分流前拦截业务 UDP，防止 QUIC 提前命中直连。
   // 网络条件放在前面，TCP 请求不再检查这些拦截条件。
-  const aiUdpRejectRules = [...domesticAIRules, ...overseasAIRules, ...claudeDomainRules, ...claudeAppRules, ...appRules].map(rule => {
+  const aiUdpRejectRules = [...domesticAIRules, ...overseasAIRules, ...claudeDomainRules, ...claudeAppRules].map(rule => {
     const matcher = rule.slice(0, rule.lastIndexOf(","));
     return `AND,((NETWORK,udp),(${matcher})),REJECT`;
   });
 
-  // 本机 HTTP/SOCKS 规则入口供终端子进程使用。不能设置 proxy: aiPolicy，
-  // 否则直接绑定节点会跳过国内模型例外。Shell 引用见 terminal-ai-proxy.zsh。
+  // 终端入口不绑定单一策略或子规则，与 TUN / 普通代理入口共用完整主规则。
+  // Shell 引用见 terminal-ai-proxy.zsh；国内、Claude、AI、站点组和兜底保持一致。
   const managedNames = [TERMINAL_AI_NAME, CLAUDE_IPV4_UPSTREAM_NAME];
   const listeners = (config.listeners || []).filter(listener => !managedNames.includes(listener.name));
   const mainPorts = [config.port, config["socks-port"], config["mixed-port"], config["redir-port"], config["tproxy-port"]];
@@ -803,24 +806,18 @@ function main(config) {
     }
   }
   config.listeners = [...listeners, {
-    name: TERMINAL_AI_NAME, type: "mixed", listen: "127.0.0.1", port: TERMINAL_AI_PORT,
-    rule: TERMINAL_AI_NAME
+    name: TERMINAL_AI_NAME, type: "mixed", listen: "127.0.0.1", port: TERMINAL_AI_PORT
   }, {
     // 仅辅助进程使用：跳过主规则，防止按 Claude 域名/IP 再次回到转发层。
     // 主入口已先处理国内 AI 直连，此入口仅负责选定节点的上游连接。
     name: CLAUDE_IPV4_UPSTREAM_NAME, type: "mixed", listen: "127.0.0.1", port: CLAUDE_IPV4_UPSTREAM_PORT,
     proxy: claudeName
   }];
-  config["sub-rules"] = {
-    ...(config["sub-rules"] || {}),
-    [TERMINAL_AI_NAME]: [
-      ...rejectRules, ...localRules,
-      "NETWORK,udp,REJECT",
-      ...domesticAIRules,
-      ...failClosedRules(claudeRules),
-      ...failClosedRules([`MATCH,${aiPolicy}`])
-    ]
-  };
+  // 清理旧版终端专用子规则，保留用户或订阅的其他子规则。
+  const subRules = { ...(config["sub-rules"] || {}) };
+  delete subRules[TERMINAL_AI_NAME];
+  if (Object.keys(subRules).length) config["sub-rules"] = subRules;
+  else delete config["sub-rules"];
 
   // ------------------------------------------------------------
   // 6. 兜底：独立选择节点。无节点、节点不支持 UDP 或其他异常均拒绝。
@@ -831,7 +828,7 @@ function main(config) {
 
   // ------------------------------------------------------------
   // 7. 合并规则，覆盖订阅原有的规则列表
-  //    顺序：广告 > 本地 > AI UDP 拦截 > 国内AI > Claude > 代理例外 > 🤖 AI/应用 > Apple/小米
+  //    顺序：广告 > 本地 > AI UDP 拦截 > 国内AI > Claude > 代理例外 > 🤖 AI > Apple/小米
   //         > 站点/iCloud/Google > 微信 > 国内域名 > Telegram IP > 国内IP > 兜底。
   //    Google 放在 AI 规则集之后，确保 gemini.google.com 仍优先归入「🤖 AI」。
   // ------------------------------------------------------------
@@ -843,7 +840,6 @@ function main(config) {
     ...failClosedRules(claudeRules),
     ...failClosedRules(proxyExceptionRules),
     ...failClosedRules(overseasAIRules),
-    ...failClosedRules(appRules),
     ...fixedRules,
     ...xiaomiDirectRules,
     ...failClosedRules(siteRules),
@@ -1053,12 +1049,47 @@ function createClaudeIPv4Relay(options = {}) {
   };
 }
 
+// 派生 AI 集只去掉终端/编辑器的宽泛进程条目，不修改域名和 IP 覆盖。
+function syncAIServiceRules(options = {}) {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = options.source || path.resolve(__dirname, "..", "rules", "ai-global.yaml");
+  const target = options.target || path.join(__dirname, "ai-global-services.yaml");
+  if (!fs.existsSync(source)) {
+    if (!options.seed) throw new Error("AI 源规则缓存尚未生成");
+    // 首次安装从正在运行的本机 Clash 下载，禁止无代理的网络回退。
+    const child = require("node:child_process");
+    const fetched = child.spawnSync("/usr/bin/curl", [
+      "--fail", "--silent", "--show-error", "--max-time", "20", "--noproxy", "",
+      "--proxy", "http://127.0.0.1:7897",
+      "https://cdn.jsdelivr.net/gh/VPSDance/ai-proxy-rules@main/rules/clash/global.yaml"
+    ], { encoding: "utf8", maxBuffer: 1048576 });
+    if (fetched.status !== 0 || !/^payload:/m.test(fetched.stdout)) throw new Error("请先运行可用的 Clash 代理，再安装辅助进程");
+    fs.mkdirSync(path.dirname(source), { recursive: true });
+    fs.writeFileSync(source, fetched.stdout, { mode: 0o600 });
+  }
+  const text = fs.readFileSync(source, "utf8");
+  if (!/^payload:/m.test(text) || !/^\s*-\s*['"]?DOMAIN(?:-SUFFIX)?,/m.test(text)) throw new Error("AI 源规则格式无效");
+  const lines = text.split("\n");
+  const filtered = lines.filter(line => !/^\s*-\s*['"]?PROCESS-(?:NAME|PATH)(?:-REGEX|-WILDCARD)?,.*(?:cursor|terminal)/i.test(line));
+  const result = filtered.join("\n");
+  let changed = true;
+  try { changed = fs.readFileSync(target, "utf8") !== result; } catch {}
+  if (changed) {
+    const next = `${target}.next-${process.pid}`;
+    fs.writeFileSync(next, result, { mode: 0o600 });
+    fs.renameSync(next, target);
+  }
+  return { changed, removed: lines.length - filtered.length };
+}
+
 function installClaudeIPv4Relay() {
   const fs = require("node:fs");
   const os = require("node:os");
   const path = require("node:path");
   const child = require("node:child_process");
   if (process.platform !== "darwin") throw new Error("自动安装仅支持 macOS；其他系统请自行常驻运行 --claude-ipv4-relay");
+  syncAIServiceRules({ seed: true });
   const label = "local.clash-claude-ipv4";
   const file = path.join(os.homedir(), "Library", "LaunchAgents", `${label}.plist`);
   const executable = fs.existsSync("/opt/homebrew/bin/node") ? "/opt/homebrew/bin/node" : process.execPath;
@@ -1075,17 +1106,22 @@ function installClaudeIPv4Relay() {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, text, { mode: 0o600 });
   const domain = `gui/${process.getuid()}`;
-  child.spawnSync("/bin/launchctl", ["bootout", `${domain}/${label}`], { stdio: "ignore" });
-  const result = child.spawnSync("/bin/launchctl", ["bootstrap", domain, file], { encoding: "utf8" });
+  // 已加载时直接重启任务，避免 bootout 尚未退出就 bootstrap 的注册竞态。
+  const loaded = child.spawnSync("/bin/launchctl", ["print", `${domain}/${label}`], { stdio: "ignore" }).status === 0;
+  const action = loaded ? ["kickstart", "-k", `${domain}/${label}`] : ["bootstrap", domain, file];
+  const result = child.spawnSync("/bin/launchctl", action, { encoding: "utf8" });
   if (result.status !== 0) throw new Error(result.stderr || "辅助进程启动失败");
   console.log(`已安装本机 IPv4 转发辅助进程（127.0.0.1:${CLAUDE_IPV4_RELAY_PORT}）；请自行重启 Clash Verge。`);
 }
 
 if (typeof module !== "undefined" && typeof require === "function") {
-  module.exports = { main, createClaudeIPv4Relay };
+  module.exports = { main, createClaudeIPv4Relay, syncAIServiceRules };
   if (require.main === module) {
     if (process.argv[2] === "--install-claude-ipv4") installClaudeIPv4Relay();
     else if (process.argv[2] === "--claude-ipv4-relay") {
+      // 使用上游最后一次成功下载的原始缓存，定期同步派生集；异常时保留旧缓存。
+      syncAIServiceRules({ seed: true });
+      setInterval(() => { try { syncAIServiceRules(); } catch {} }, 5000).unref();
       const relay = createClaudeIPv4Relay();
       relay.listen().then(() => console.log(`Claude IPv4 relay listening on 127.0.0.1:${CLAUDE_IPV4_RELAY_PORT}`)).catch(error => { console.error(error.message); process.exitCode = 1; });
       for (const signal of ["SIGTERM", "SIGINT"]) process.once(signal, () => relay.close().then(() => process.exit(0)));

@@ -8,11 +8,10 @@ const path = require('node:path');
 const policy = require('./expected-routes.json');
 
 function parseArgs(argv) {
-  const options = { seconds: 30, intervalMs: 500, save: false };
+  const options = { seconds: 30, intervalMs: 500 };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--help') return { help: true };
-    if (arg === '--save') { options.save = true; continue; }
     if ((arg === '--seconds' || arg === '--interval-ms') && argv[i + 1]) {
       const n = Number(argv[++i]);
       if (!Number.isInteger(n)) throw new Error(arg + ' 必须是整数');
@@ -242,15 +241,13 @@ async function run(options) {
     selectorsEnd: selectorSnapshot(proxiesEnd),
     connections: [...seen.values()], relay, rules, options, errors
   });
-  if (options.save) {
-    const desktop = path.join(os.homedir(), 'Desktop');
-    if (!fs.existsSync(desktop)) throw new Error('桌面目录不存在：' + desktop);
-    const stamp = report.checkedAt.replace(/[:.]/g, '-');
-    const target = path.join(desktop, 'clash-traffic-check-' + stamp + '.json');
-    process.stderr.write('保存本地报告：' + target + '\n');
-    fs.writeFileSync(target, JSON.stringify(report, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
-    report.savedTo = target;
-  }
+  const desktop = path.join(os.homedir(), 'Desktop');
+  if (!fs.existsSync(desktop)) throw new Error('桌面目录不存在：' + desktop);
+  const stamp = report.checkedAt.replace(/[:.]/g, '-');
+  const target = path.join(desktop, 'clash-traffic-check-' + stamp + '.json');
+  report.savedTo = target;
+  fs.writeFileSync(target, JSON.stringify(report, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+  process.stderr.write('已保存本地报告：' + target + '\n');
   process.stdout.write(JSON.stringify(report, null, 2) + '\n');
 }
 
@@ -258,7 +255,7 @@ if (require.main === module) {
   try {
     const options = parseArgs(process.argv.slice(2));
     if (options.help) {
-      process.stdout.write('用法：node traffic-monitor/check.cjs [--seconds 30] [--interval-ms 500] [--save]\n默认只输出到终端；--save 另存到桌面。只读取 Clash 状态与连接。\n');
+      process.stdout.write('用法：node traffic-monitor/check.cjs [--seconds 30] [--interval-ms 500]\n每次在桌面保存 JSON 报告；只读取 Clash 状态与连接。\n');
     } else {
       run(options).catch(error => { process.stderr.write('检测失败：' + error.message + '\n'); process.exitCode = 1; });
     }

@@ -342,6 +342,7 @@ async function worker(dir) {
       } catch (error) { if (errors.length < 20) errors.push(error.message); }
     };
     await sample();
+    if (!sampleCount) throw new Error('首次连接快照失败：' + (errors[0] || '未知错误'));
     writeJSON(path.join(dir, 'ready.json'), { startedAt, pid: process.pid });
     while (!fs.existsSync(path.join(dir, 'stop')) && Date.now() - Date.parse(startedAt) < MAX_MS) {
       await sleep(INTERVAL_MS);

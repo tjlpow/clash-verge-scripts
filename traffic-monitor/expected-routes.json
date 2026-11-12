@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "groups": {
+    "claude": "🧠 Claude",
+    "claudeExit": "🌐 Claude Exit",
+    "ai": "🤖 AI",
+    "main": "🚀 main",
+    "fallback": "🐟 Fallback",
+    "relay": "Claude IPv4 relay"
+  },
+  "claude": {
+    "domainSuffixes": [
+      "anthropic.com",
+      "claude.ai",
+      "claude.com",
+      "clau.de",
+      "claudemcpclient.com",
+      "claudemcpcontent.com",
+      "claudeusercontent.com"
+    ],
+    "exactDomains": [
+      "servd-anthropic-website.b-cdn.net",
+      "anthropic.com.cdn.cloudflare.net",
+      "anthropic.auth0.com",
+      "anthropic-com.ghost.io"
+    ],
+    "ipRulePayloads": [
+      "160.79.104.0/21",
+      "2607:6bc0::/32",
+      "399358"
+    ],
+    "processPaths": [
+      "(^|/)Claude\\.app/Contents/",
+      "(^|/)\\.local/share/claude/versions/[^/]+$"
+    ],
+    "processNames": [
+      "^(Claude|claude)( Helper.*)?$"
+    ]
+  },
+  "ruleSets": {
+    "domesticAI": "ai-cn",
+    "foreignAI": "ai-global"
+  },
+  "mainGeoSites": [
+    "notion",
+    "github"
+  ],
+  "exitOff": "Exit Off",
+  "relayPort": 7899
+}

@@ -134,3 +134,29 @@ Shadowrocket 的 AI UDP 拦截使用逻辑规则引用远程 AI 规则集。导�
 
 - **Clash Verge**　编辑本机 `Script.js`，完成检查后提交到仓库的 `clash-verge.js`，转发逻辑变化时重载本机辅助进程，再提示用户自行重启 Clash 并验证。
 - **Shadowrocket**　编辑本机配置，文件名使用当天日期 `Shadowrocket-YYYY-MM-DD.conf`。当天更新沿用该文件名；清理诊断配置和旧修订，保留当天正式配置。检查后提交到仓库的 `Shadowrocket.conf`，再提示用户从 iCloud 导入并启用当天正式配置，核对 DNS 后在手机上测试。
+
+## 手动流量检测
+
+[traffic-monitor/](traffic-monitor/) 提供 Clash Verge 的只读代码检测和模型复查流程。两者均在对话中手动触发；不会后台定时运行。代码检测默认只输出到终端。若需保存报告，先告知用户，默认写入桌面；报告与机场凭据不提交仓库。以下提示词可直接复制到没有本对话背景的新对话。
+
+### 代码检测提示词
+
+```text
+请对我这台 Mac 的 Clash Verge 做一次只读流量检测。项目仓库是 https://github.com/tjlpow/clash-verge-scripts，先读取最新 main 分支的 traffic-monitor/README.md、expected-routes.json、check.cjs 和 clash-verge.js；不要依赖任何既有对话记忆。
+
+开始前告诉我采样时长，以及是否需要创建本地文件。如果需要下载项目文件或保存报告，先告知具体文件，默认放在桌面。检测程序默认只输出到终端，不保存报告。不要读取 Merge.yaml 的凭据，不要切换 Clash 模式、节点、配置或重启 Clash，也不要发送 Claude 模型消息。
+
+请在我实际使用目标应用时运行 node traffic-monitor/check.cjs --seconds 30，读取本机控制接口的活动连接、当前模式、TUN 和分组选择。依据独立预期文件与实际链路比较；区分已证实异常、节点或转发服务故障、采样不足。注意 Claude 的 relay、中转和出口是不同连接，看到几段连接不等于逐请求精确关联。
+
+按“结论、当前状态、链路证据、异常与遗漏、下一步与本地文件”五项输出；没有采到 Claude 流量时明确写“证据不足”，不要写“全部正常”。
+```
+
+### 模型检测提示词
+
+```text
+请复查我的 Clash Verge 流量分流是否有规则遗漏。项目仓库是 https://github.com/tjlpow/clash-verge-scripts，先读取最新 main 分支的 traffic-monitor/README.md、expected-routes.json、clash-verge.js 和根 README；不要依赖任何既有对话记忆。若没有近期代码检测报告，先按仓库中的代码检测提示词做只读检测。若要产生任何本地文件，先告知用户，默认放在桌面。
+
+请结合代码报告、实际运行分组、脚本规则顺序和已观察到的连接，核对国内 AI 直连、Claude relay→中转→所选出口、其他国外 AI、Notion/GitHub 与 Fallback。先排除节点故障、手选 REJECT、Exit Off、TUN／辅助进程问题和采样遗漏。新域名要结合官方网络要求或真实使用证据判断；不要把共享 CDN、监控或开发平台域名仅凭名称整体加入 Claude。
+
+按“结论、当前状态、链路证据、异常与遗漏、下一步与本地文件”五项输出。每个建议注明“已证实／待实测／不建议修改”、依据、最小改法及回归方法。证据不足就说明缺什么；本提示词只要求复查，若我同时明确要求修复，再修改脚本、独立预期和文档，并验证后按仓库提交规范提交。
+```

@@ -11,7 +11,7 @@
 
 ## 判定边界
 
-- **预期链路**：`expected-routes.json` 独立记录规则意图。国内 AI 规则先于 Claude 进程规则；Claude 官方域名和可识别的 Claude 进程经本机 relay；其他国外 AI、Notion／GitHub 和兜底分别跟随对应组。
+- **预期链路**：`expected-routes.json` 独立记录规则意图。本地／私有地址与国内 AI 规则先于 Claude 进程规则；Claude 官方域名和可识别的 Claude 进程经本机 relay；其他国外 AI、Notion／GitHub 和兜底分别跟随对应组。
 - **实际链路**：以 Clash `/connections` 的目标域名、进程、命中规则和 `chains` 为证据；`chains` 通常由最终节点向上列组名。分组选择取实际运行值，不把节点名当成出口 IP 证明。
 - **Claude 多段连接**：业务连接、中转和出口分别出现。报告 `claudeSegments` 仅说明采样期间是否观察到各段，不宣称逐请求精确关联。`Exit Off` 只需中转；`REJECT` 代表主动断流。缺少某段、没采到业务连接、采样期间切组或不在规则模式时，结论为 `INCONCLUSIVE`。
 - **短连接**：Clash `/connections` 只有活动连接。采样没看到请求不等于规则正确。页面、插件、MCP 或 CLI 新功能需产生真实流量后再复查。

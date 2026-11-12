@@ -68,6 +68,9 @@ function classify(connection) {
   const metadata = connection.metadata || {};
   const host = String(metadata.host || '').toLowerCase().replace(/\.$/, '');
   const payload = String(connection.rulePayload || '');
+  if (isClaudeProcess(metadata) &&
+      ((connection.rule === 'GeoSite' && payload === 'private') ||
+       (connection.rule === 'IPCIDR' && policy.localRulePayloads.includes(payload)))) return 'local';
   if (payload === policy.ruleSets.domesticAI) return 'domestic_ai';
   if (policy.claude.domainSuffixes.some(suffix => suffixMatches(host, suffix)) ||
       policy.claude.exactDomains.includes(host) ||
@@ -106,7 +109,7 @@ function evaluateConnection(item) {
   const chains = item.chains;
   let expected = null;
   let passed = null;
-  if (item.category === 'domestic_ai') {
+  if (item.category === 'local' || item.category === 'domestic_ai') {
     expected = 'DIRECT';
     passed = chains.includes('DIRECT');
   } else if (item.category === 'claude') {
@@ -173,7 +176,7 @@ function buildReport(input) {
   if (!selectorsReady) issues.push({ severity: 'info', code: 'CLAUDE_BLOCKED_OR_UNSET', detail: 'Claude 中转或出口为 REJECT／未选择；新连接预期断流' });
   if (errors.length) issues.push({ severity: 'info', code: 'SAMPLING_ERRORS', count: errors.length });
   const fallbackCandidates = [...new Set(relevant.filter(x => x.category === 'fallback' && x.host).map(x => x.host))].slice(0, 50);
-  const status = !priorityOK || failures.length || (claude.length && !relay) ? 'FAIL'
+  const status = !priorityOK || failures.length || !relay ? 'FAIL'
     : config.mode !== 'rule' || !config.tun?.enable || !selectorsReady || groupsChanged || errors.length ||
       !claude.length || segmentEvidence.conclusion !== 'SEGMENTS_OBSERVED'
       ? 'INCONCLUSIVE' : 'PASS';

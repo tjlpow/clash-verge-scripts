@@ -6,7 +6,7 @@
 
 - **项目现状**：阅读仓库根 [README 的 Clash Verge、策略组选项、Claude 出口选择和更新流程](../README.md)，以及 [clash-verge.js 顶部维护注释](../clash-verge.js)。它们说明现有规则、Claude 链路、辅助进程和迭代方式；此处不另复制一份规则清单。
 - **本机权威脚本**：`~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/profiles/Script.js`。核对其与仓库 `clash-verge.js` 的差异；本机 `Merge.yaml` 含凭据，不复制、展示或提交。按 `Script.js` 顶部注释执行修改、校验、提交及生效提示。
-- **检测依据**：本目录的 `expected-routes.json` 是独立预期；`check.cjs` 只读 Clash 控制接口。预载时核对 Node 可用，将这两个文件的最新版放到系统临时目录 `clash-traffic-monitor/runner/`，检查语法。此阶段不启动采样。
+- **检测依据**：本目录的 `expected-routes.json` 是独立预期；`check.cjs` 只读 Clash 控制接口，并通过指定的本机代理入口探测公网 IPv4。预载时核对 Node 可用，将这两个文件的最新版放到系统临时目录 `clash-traffic-monitor/runner/`，检查语法。此阶段不启动采样。
 - **运行边界**：不切换 Clash 模式或节点，不重启 Clash，不代替用户发送 Claude 消息，不读取对话正文或令牌。读取连接的域名、进程标签、命中规则、节点链和字节变化即可。
 
 ## 对话阶段与数字选项
@@ -46,6 +46,6 @@
 
 ## 代码判定与报告
 
-`check.cjs` 读取当前模式、TUN、规则、分组选择、Claude 转发服务及 `/connections`。报告包含采样起止时间、全部观察到的连接元数据、采样期间新建或字节数增加的连接、固定规则比较和各链路段证据。未观察到 Claude 请求活动、分组中途变化、链路段不全或采样中断时输出 `INCONCLUSIVE`，不宣称“全部正常”。发现直连泄漏或转发故障时输出 `FAIL`。
+`check.cjs` 读取当前模式、TUN、规则、分组选择、Claude 转发服务及 `/connections`。另通过本机 Claude 中转入口和出口入口，在开始时、每隔 60 秒及结束时请求 IPv4 回显，记录探测时间、中转选择、实际节点和公网 IPv4；`Exit Off` 时最终出口显示中转 IP，链式出口则分别显示两段 IP。回显探测只走指定代理入口，失败记为未知，不回退直连。报告包含采样起止时间、全部观察到的连接元数据、采样期间新建或字节数增加的连接、固定规则比较、链路段证据及公网 IPv4 探测记录。未观察到 Claude 请求活动、分组中途变化、链路段不全或采样中断时输出 `INCONCLUSIVE`，不宣称“全部正常”。发现直连泄漏或转发故障时输出 `FAIL`。
 
-`report.md` 是用户查看和后续追加复检结果的同一份报告；`report.json` 保存结构化代码结果。只记录元数据，不记录 URL 路径、请求正文、令牌或本机源地址。两份文件均位于系统临时目录，权限只允许当前用户读取；系统清理临时目录后链接也会失效。
+`report.md` 是用户查看和后续追加复检结果的同一份报告；`report.json` 保存结构化代码结果。中转 IP 稳定性只根据探测时刻判断；相同 IP 不能证明间隔内没有变化，也不能代替 Anthropic 端实际所见 IP。只记录元数据，不记录 URL 路径、请求正文、令牌或本机源地址。两份文件均位于系统临时目录，权限只允许当前用户读取；系统清理临时目录后链接也会失效。

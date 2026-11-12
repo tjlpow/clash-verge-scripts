@@ -5,7 +5,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, execFile } = require('node:child_process');
 const policy = require('./expected-routes.json');
 
 function getJSON(socketPath, urlPath) {
@@ -66,6 +66,90 @@ function classify(connection) {
 function selectorSnapshot(proxies) {
   const names = Object.values(policy.groups).filter(name => name !== policy.groups.relay);
   return Object.fromEntries(names.map(name => [name, proxies.proxies && proxies.proxies[name] ? proxies.proxies[name].now || null : null]));
+}
+
+function selectedLeaf(proxies, name) {
+  const visited = new Set();
+  let current = name;
+  while (current && proxies.proxies && proxies.proxies[current] && proxies.proxies[current].now) {
+    if (visited.has(current)) return null;
+    visited.add(current);
+    current = proxies.proxies[current].now;
+  }
+  return current || null;
+}
+
+function probeIPv4(port) {
+  return new Promise(resolve => {
+    execFile('/usr/bin/curl', [
+      '--fail', '--silent', '--show-error', '--ipv4', '--max-time', '8',
+      '--proxy', 'http://127.0.0.1:' + port, '--noproxy', '',
+      'https://api4.ipify.org'
+    ], { timeout: 9000, maxBuffer: 1024, env: { PATH: '/usr/bin:/bin' } }, (error, stdout) => {
+      const value = String(stdout).trim();
+      const parts = value.split('.');
+      const valid = parts.length === 4 && parts.every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255);
+      resolve(error ? { ip: null, error: String(error.message).slice(0, 180) }
+        : valid ? { ip: value, error: null }
+          : { ip: null, error: 'IPv4 回显结果无效' });
+    });
+  });
+}
+
+async function captureEgress(socketPath) {
+  const at = new Date().toISOString();
+  let proxies;
+  try { proxies = await getJSON(socketPath, '/proxies'); }
+  catch (error) { return { at, transit: { node: null, ip: null, error: '分组读取失败：' + error.message }, exit: null }; }
+  const transitGroup = policy.groups.claude;
+  const exitGroup = policy.groups.claudeExit;
+  const transitSelection = proxies.proxies?.[transitGroup]?.now || null;
+  const exitSelection = proxies.proxies?.[exitGroup]?.now || null;
+  const transitProbe = probeIPv4(7900);
+  const exitProbe = exitSelection && exitSelection !== policy.exitOff && exitSelection !== 'REJECT'
+    ? probeIPv4(7901) : null;
+  const transit = {
+    selection: transitSelection, node: selectedLeaf(proxies, transitSelection),
+    ...await transitProbe
+  };
+  let exit;
+  if (exitSelection === policy.exitOff) {
+    exit = { selection: exitSelection, node: transit.node, ip: transit.ip,
+      error: transit.error, via: 'transit' };
+  } else if (exitSelection === 'REJECT' || !exitSelection) {
+    exit = { selection: exitSelection, node: null, ip: null, error: '出口已拒绝或未设置', via: 'blocked' };
+  } else {
+    exit = { selection: exitSelection, node: selectedLeaf(proxies, exitSelection),
+      ...await exitProbe, via: 'chain' };
+  }
+  let selectionChangedDuringProbe = false;
+  try {
+    const after = await getJSON(socketPath, '/proxies');
+    selectionChangedDuringProbe = after.proxies?.[transitGroup]?.now !== transitSelection ||
+      after.proxies?.[exitGroup]?.now !== exitSelection ||
+      selectedLeaf(after, transitSelection) !== transit.node ||
+      (exit.via === 'chain' && selectedLeaf(after, exitSelection) !== exit.node);
+  } catch { selectionChangedDuringProbe = true; }
+  return { at, transit, exit, selectionChangedDuringProbe };
+}
+
+function egressSummary(samples) {
+  const describe = key => {
+    const values = samples.map(sample => sample[key]).filter(Boolean);
+    const ips = [...new Set(values.map(value => value.ip).filter(Boolean))];
+    const nodes = [...new Set(values.map(value => value.node).filter(Boolean))];
+    return {
+      nodes, ips, successfulProbes: values.filter(value => value.ip).length,
+      failedProbes: values.filter(value => !value.ip).length,
+      stability: !ips.length ? 'UNKNOWN' : ips.length > 1 ? 'CHANGED' : 'SAME_AT_SAMPLE_TIMES'
+    };
+  };
+  return { cadenceSeconds: 60, samples, transit: describe('transit'), exit: describe('exit') };
+}
+
+function isProbeConnection(item) {
+  return item.host === 'api4.ipify.org' ||
+    (item.process === 'curl' && [7900, 7901].includes(Number(item.destinationPort)));
 }
 
 
@@ -162,6 +246,7 @@ function safeObservation(item) {
     category: classify(connection),
     host: metadata.host || null,
     process: processTag,
+    destinationPort: metadata.destinationPort || null,
     network: metadata.network || null,
     rule: connection.rule || null,
     rulePayload: connection.rulePayload || null,
@@ -195,7 +280,7 @@ function evaluateConnection(item) {
 
 function buildReport(input) {
   const { config, configEnd, selectorsStart, selectorsEnd, connections, relay, rules,
-    startedAt, endedAt, sampleCount, errors, overflow, autoStopped } = input;
+    startedAt, endedAt, sampleCount, errors, overflow, autoStopped, egressSamples = [] } = input;
   const orderedRules = (rules && rules.rules) || [];
   const indexOfRule = test => orderedRules.findIndex(test);
   const priority = {
@@ -209,7 +294,7 @@ function buildReport(input) {
   const groupsChanged = JSON.stringify(selectorsStart) !== JSON.stringify(selectorsEnd);
   const modeChanged = config.mode !== configEnd.mode || Boolean(config.tun?.enable) !== Boolean(configEnd.tun?.enable);
   const all = connections.map(x => evaluateConnection(safeObservation(x)));
-  const active = all.filter(x => x.activeDuringCapture);
+  const active = all.filter(x => x.activeDuringCapture && !isProbeConnection(x));
   const relevant = active.filter(x => x.category !== 'other');
   if (config.mode !== 'rule') for (const item of relevant) item.result = 'NOT_EVALUATED';
   const evaluated = relevant.filter(x => x.result !== 'NOT_EVALUATED');
@@ -251,7 +336,7 @@ function buildReport(input) {
       modeChanged || errors.length || overflow.count || autoStopped || !claude.length ||
       segmentEvidence.conclusion !== 'SEGMENTS_OBSERVED' ? 'INCONCLUSIVE' : 'PASS';
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     startedAt, endedAt, status,
     scope: 'All observed Clash active connections; metadata only',
     environment: {
@@ -268,6 +353,7 @@ function buildReport(input) {
       failed: failures.length
     },
     claudeSegments: segmentEvidence,
+    egress: egressSummary(egressSamples),
     issues,
     connections: all,
     fallbackCandidates: [...new Set(relevant.filter(x => x.category === 'fallback' && x.host).map(x => x.host))].slice(0, 100),
@@ -275,7 +361,8 @@ function buildReport(input) {
       'Clash /connections 是活跃连接快照，极短连接仍可能在采样间隔内消失。',
       '已有连接仅在采样期间字节数增加时计入本次活动；新连接按建立时间识别。',
       '转发、中转和出口是不同连接；观察到各段不等于逐请求精确关联。',
-      '节点名称不能证明实际公网出口 IP。'
+      '公网 IPv4 通过独立回显请求定时探测；同一 IP 只代表采样时刻相同，无法证明间隔内没有变化。',
+      '回显请求与 Claude 业务请求是不同连接；中转 IP 不等于 Anthropic 实际看到的最终出口 IP。'
     ]
   };
 }
@@ -303,9 +390,31 @@ function markdown(report, jsonPath) {
     '- 中转：' + report.claudeSegments.transitConnections,
     '- 判定：' + report.claudeSegments.conclusion,
     '',
+    '## 公网 IPv4 探测',
+    '',
+    '- **中转节点**：' + (report.egress.transit.nodes.map(clean).join('、') || '未确认'),
+    '- **中转 IPv4**：' + (report.egress.transit.ips.join('、') || '未探测到'),
+    '- **中转稳定性**：' + report.egress.transit.stability + '（仅代表采样时刻）',
+    '- **最终出口 IPv4**：' + (report.egress.exit.ips.join('、') || '未探测到'),
+    '',
+    '| 时间 | 中转选择 / 实际节点 | 中转 IPv4 | 出口选择 / 实际节点 | 最终出口 IPv4 | 探测结果 |',
+    '| --- | --- | --- | --- | --- | --- |'
+  ];
+  for (const sample of report.egress.samples) {
+    lines.push('| ' + clean(sample.at) + ' | ' +
+      clean([sample.transit?.selection, sample.transit?.node].filter(Boolean).join(' → ')) + ' | ' +
+      clean(sample.transit?.ip || '未知') + ' | ' +
+      clean([sample.exit?.selection, sample.exit?.node].filter(Boolean).join(' → ')) + ' | ' +
+      clean(sample.exit?.ip || '未知') + ' | ' +
+      clean([sample.transit?.error, sample.exit?.error,
+        sample.selectionChangedDuringProbe ? '探测期间分组变化，节点与 IP 的对应关系不确定' : null]
+        .filter(Boolean).join('；') || '成功') + ' |');
+  }
+  if (!report.egress.samples.length) lines.push('| 未执行 | | | | | |');
+  lines.push('',
     '## 异常',
     ''
-  ];
+  );
   if (!report.issues.length) lines.push('未发现已证实异常。');
   else for (const issue of report.issues) lines.push('- ' + clean(issue.code) + '：' + clean(issue.host || issue.detail || issue.count || ''));
   lines.push('', '## 相关活动连接', '',
@@ -333,6 +442,18 @@ async function worker(dir) {
     const seen = new Map();
     const errors = [];
     const overflow = { count: 0 };
+    const egressSamples = [];
+    let pendingProbe = null;
+    let lastProbeAt = 0;
+    const launchProbe = () => {
+      if (pendingProbe) return;
+      lastProbeAt = Date.now();
+      pendingProbe = captureEgress(socketPath)
+        .then(result => egressSamples.push(result))
+        .catch(error => egressSamples.push({ at: new Date().toISOString(),
+          transit: { node: null, ip: null, error: error.message }, exit: null }))
+        .finally(() => { pendingProbe = null; });
+    };
     let sampleCount = 0;
     const sample = async () => {
       try {
@@ -344,10 +465,14 @@ async function worker(dir) {
     await sample();
     if (!sampleCount) throw new Error('首次连接快照失败：' + (errors[0] || '未知错误'));
     writeJSON(path.join(dir, 'ready.json'), { startedAt, pid: process.pid });
+    launchProbe();
     while (!fs.existsSync(path.join(dir, 'stop')) && Date.now() - Date.parse(startedAt) < MAX_MS) {
       await sleep(INTERVAL_MS);
       await sample();
+      if (Date.now() - lastProbeAt >= 60000) launchProbe();
     }
+    if (pendingProbe) await pendingProbe;
+    egressSamples.push(await captureEgress(socketPath));
     const autoStopped = !fs.existsSync(path.join(dir, 'stop'));
     const endedAt = new Date().toISOString();
     let configEnd = config;
@@ -361,7 +486,7 @@ async function worker(dir) {
       config, configEnd, selectorsStart: selectorSnapshot(proxiesStart),
       selectorsEnd: selectorSnapshot(proxiesEnd), rules, relay,
       connections: [...seen.values()], startedAt, endedAt,
-      sampleCount, errors, overflow, autoStopped
+      sampleCount, errors, overflow, autoStopped, egressSamples
     });
     const jsonPath = path.join(dir, 'report.json');
     const mdPath = path.join(dir, 'report.md');
@@ -411,7 +536,7 @@ async function stop() {
   const state = currentSession();
   const donePath = path.join(state.dir, 'done.json');
   if (!fs.existsSync(donePath)) fs.writeFileSync(path.join(state.dir, 'stop'), '', { mode: 0o600 });
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < 160; i++) {
     if (fs.existsSync(donePath)) return { state: 'DONE', ...readJSON(donePath) };
     if (fs.existsSync(path.join(state.dir, 'error.json'))) throw new Error(readJSON(path.join(state.dir, 'error.json')).error);
     if (!isAlive(state.pid)) throw new Error('采样进程异常退出；查看 ' + path.join(state.dir, 'worker.log'));
@@ -467,4 +592,5 @@ async function main() {
 if (require.main === module) {
   main().catch(error => { process.stderr.write('检测失败：' + error.message + '\n'); process.exitCode = 1; });
 }
-module.exports = { classify, safeObservation, evaluateConnection, buildReport, recordSnapshot, markdown };
+module.exports = { classify, safeObservation, evaluateConnection, buildReport, recordSnapshot,
+  markdown, selectedLeaf, egressSummary, captureEgress };

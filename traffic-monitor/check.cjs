@@ -5,26 +5,8 @@ const http = require('node:http');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { spawn } = require('node:child_process');
 const policy = require('./expected-routes.json');
-
-function parseArgs(argv) {
-  const options = { seconds: 30, intervalMs: 500 };
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === '--help') return { help: true };
-    if ((arg === '--seconds' || arg === '--interval-ms') && argv[i + 1]) {
-      const n = Number(argv[++i]);
-      if (!Number.isInteger(n)) throw new Error(arg + ' 必须是整数');
-      if (arg === '--seconds') options.seconds = n;
-      else options.intervalMs = n;
-      continue;
-    }
-    throw new Error('未知参数：' + arg);
-  }
-  if (options.seconds < 1 || options.seconds > 180) throw new Error('--seconds 范围为 1–180');
-  if (options.intervalMs < 200 || options.intervalMs > 5000) throw new Error('--interval-ms 范围为 200–5000');
-  return options;
-}
 
 function getJSON(socketPath, urlPath) {
   return new Promise((resolve, reject) => {
@@ -43,7 +25,7 @@ function getJSON(socketPath, urlPath) {
 
 function relayReachable() {
   return new Promise(resolve => {
-    const request = http.get({ hostname: '127.0.0.1', port: policy.relayPort, path: '/', timeout: 1500 }, response => {
+    const request = http.get({ hostname: '127.0.0.1', port: Number(process.env.CLAUDE_RELAY_PORT || policy.relayPort), path: '/', timeout: 1500 }, response => {
       response.resume();
       resolve(response.statusCode === 200 || response.statusCode === 405);
     });
@@ -86,14 +68,98 @@ function selectorSnapshot(proxies) {
   return Object.fromEntries(names.map(name => [name, proxies.proxies && proxies.proxies[name] ? proxies.proxies[name].now || null : null]));
 }
 
-function safeObservation(connection, category, seenAt) {
+
+const BASE_DIR = path.join(os.tmpdir(), 'clash-traffic-monitor');
+const POINTER = path.join(BASE_DIR, 'current.json');
+const INTERVAL_MS = 250;
+const MAX_MS = 60 * 60 * 1000;
+const MAX_CONNECTIONS = 20000;
+
+function ensureBase() {
+  fs.mkdirSync(BASE_DIR, { recursive: true, mode: 0o700 });
+  fs.chmodSync(BASE_DIR, 0o700);
+}
+
+function writeJSON(file, value) {
+  fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
+}
+
+function readJSON(file) {
+  return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
+
+function currentSession() {
+  if (!fs.existsSync(POINTER)) throw new Error('没有当前检测；先选择开始检测');
+  const state = readJSON(POINTER);
+  const realBase = fs.realpathSync(BASE_DIR);
+  const realSession = fs.realpathSync(state.dir);
+  if (path.dirname(realSession) !== realBase ||
+      !path.basename(realSession).startsWith('session-') ||
+      !fs.existsSync(path.join(realSession, 'session.marker'))) {
+    throw new Error('临时会话路径无效');
+  }
+  return { ...state, dir: realSession };
+}
+
+function isAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+function connectionKey(connection) {
+  return connection.id || [
+    connection.start, connection.metadata && connection.metadata.host,
+    connection.metadata && connection.metadata.processPath,
+    connection.rule, (connection.chains || []).join('/')
+  ].join('|');
+}
+
+function recordSnapshot(seen, data, at, startedAt, overflow) {
+  for (const connection of data.connections || []) {
+    const key = connectionKey(connection);
+    const upload = Number(connection.upload || 0);
+    const download = Number(connection.download || 0);
+    let item = seen.get(key);
+    if (!item) {
+      if (seen.size >= MAX_CONNECTIONS) { overflow.count++; continue; }
+      item = {
+        connection, firstSeenAt: at, lastSeenAt: at,
+        firstUpload: upload, firstDownload: download,
+        lastUpload: upload, lastDownload: download,
+        newDuringCapture: Number.isFinite(Date.parse(connection.start)) &&
+          Date.parse(connection.start) >= Date.parse(startedAt),
+        sampleCount: 1
+      };
+      seen.set(key, item);
+    } else {
+      item.connection = connection;
+      item.lastSeenAt = at;
+      item.lastUpload = upload;
+      item.lastDownload = download;
+      item.sampleCount++;
+    }
+  }
+}
+
+function safeObservation(item) {
+  const connection = item.connection;
   const metadata = connection.metadata || {};
   const processPath = metadata.processPath || '';
   const processTag = /\.local\/share\/claude\/versions\/[^/]+$/.test(processPath)
     ? 'Claude Code CLI'
-    : /Claude\.app\/Contents\//.test(processPath) ? 'Claude Desktop' : (metadata.process || path.basename(processPath) || null);
+    : /Claude\.app\/Contents\//.test(processPath)
+      ? 'Claude Desktop' : path.basename(metadata.process || processPath) || null;
+  const uploadDelta = Math.max(0, item.lastUpload - item.firstUpload);
+  const downloadDelta = Math.max(0, item.lastDownload - item.firstDownload);
   return {
-    seenAt, category,
+    firstSeenAt: item.firstSeenAt,
+    lastSeenAt: item.lastSeenAt,
+    newDuringCapture: item.newDuringCapture,
+    uploadDelta, downloadDelta,
+    activeDuringCapture: item.newDuringCapture || uploadDelta + downloadDelta > 0,
+    sampleCount: item.sampleCount,
+    category: classify(connection),
     host: metadata.host || null,
     process: processTag,
     network: metadata.network || null,
@@ -128,7 +194,8 @@ function evaluateConnection(item) {
 }
 
 function buildReport(input) {
-  const { config, selectorsStart, selectorsEnd, connections, relay, rules, options, errors } = input;
+  const { config, configEnd, selectorsStart, selectorsEnd, connections, relay, rules,
+    startedAt, endedAt, sampleCount, errors, overflow, autoStopped } = input;
   const orderedRules = (rules && rules.rules) || [];
   const indexOfRule = test => orderedRules.findIndex(test);
   const priority = {
@@ -140,8 +207,10 @@ function buildReport(input) {
   const priorityOK = priority.domesticAI >= 0 && priority.claude > priority.domesticAI &&
     priority.foreignAI > priority.claude && priority.nativeCLI >= 0;
   const groupsChanged = JSON.stringify(selectorsStart) !== JSON.stringify(selectorsEnd);
-  const observations = connections.map(x => evaluateConnection(safeObservation(x.connection, classify(x.connection), x.seenAt)));
-  const relevant = observations.filter(x => x.category !== 'other');
+  const modeChanged = config.mode !== configEnd.mode || Boolean(config.tun?.enable) !== Boolean(configEnd.tun?.enable);
+  const all = connections.map(x => evaluateConnection(safeObservation(x)));
+  const active = all.filter(x => x.activeDuringCapture);
+  const relevant = active.filter(x => x.category !== 'other');
   if (config.mode !== 'rule') for (const item of relevant) item.result = 'NOT_EVALUATED';
   const evaluated = relevant.filter(x => x.result !== 'NOT_EVALUATED');
   const failures = evaluated.filter(x => x.result === 'FAIL');
@@ -149,14 +218,14 @@ function buildReport(input) {
   const g = policy.groups;
   const exit = selectorsEnd[g.claudeExit];
   const relayCount = claude.filter(x => x.chains.includes(g.relay)).length;
-  const exitCount = observations.filter(x => x.chains.includes(g.claudeExit)).length;
-  const transitCount = observations.filter(x => x.chains.includes(g.claude)).length;
+  const exitCount = active.filter(x => x.chains.includes(g.claudeExit)).length;
+  const transitCount = active.filter(x => x.chains.includes(g.claude)).length;
   const expectedExit = exit && exit !== policy.exitOff && exit !== 'REJECT';
   const segmentEvidence = {
     relayConnections: relayCount,
     exitConnections: exitCount,
     transitConnections: transitCount,
-    conclusion: !claude.length ? 'NO_CLAUDE_TRAFFIC'
+    conclusion: !claude.length ? 'NO_CLAUDE_ACTIVITY'
       : !relayCount ? 'MISSING_RELAY'
       : !transitCount || (expectedExit && !exitCount) ? 'PARTIAL'
       : 'SEGMENTS_OBSERVED'
@@ -165,100 +234,236 @@ function buildReport(input) {
     severity: 'high', code: 'ROUTE_MISMATCH', host: x.host, process: x.process,
     expected: x.expected, actual: x.chains, rule: x.rule, rulePayload: x.rulePayload
   }));
-  if (!priorityOK) issues.push({ severity: 'high', code: 'RULE_PRIORITY', detail: '国内 AI、Claude、国外 AI 或原生 CLI 规则缺失／顺序异常', priority });
-  if (config.mode !== 'rule') issues.push({ severity: 'info', code: 'NOT_RULE_MODE', detail: '规则分流无法在当前模式验证' });
-  if (!config.tun || !config.tun.enable) issues.push({ severity: 'info', code: 'TUN_OFF', detail: '不遵循系统代理的应用可能未被捕获' });
-  if (!relay) issues.push({ severity: 'high', code: 'RELAY_UNREACHABLE', detail: '本机 Claude IPv4 转发服务未响应' });
-  if (groupsChanged) issues.push({ severity: 'info', code: 'SELECTOR_CHANGED', detail: '采样期间分组选择变化，连接可能对应不同选择' });
-  const selectedTransit = selectorsEnd[g.claude];
-  const selectorsReady = Boolean(selectedTransit && exit && selectedTransit !== 'REJECT' && exit !== 'REJECT');
-  if (!selectorsReady) issues.push({ severity: 'info', code: 'CLAUDE_BLOCKED_OR_UNSET', detail: 'Claude 中转或出口为 REJECT／未选择；新连接预期断流' });
+  if (!priorityOK) issues.push({ severity: 'high', code: 'RULE_PRIORITY', priority });
+  if (config.mode !== 'rule') issues.push({ severity: 'info', code: 'NOT_RULE_MODE' });
+  if (!config.tun || !config.tun.enable) issues.push({ severity: 'info', code: 'TUN_OFF' });
+  if (!relay) issues.push({ severity: 'high', code: 'RELAY_UNREACHABLE' });
+  if (groupsChanged) issues.push({ severity: 'info', code: 'SELECTOR_CHANGED' });
+  if (modeChanged) issues.push({ severity: 'info', code: 'MODE_OR_TUN_CHANGED' });
+  const transit = selectorsEnd[g.claude];
+  const selectorsReady = Boolean(transit && exit && transit !== 'REJECT' && exit !== 'REJECT');
+  if (!selectorsReady) issues.push({ severity: 'info', code: 'CLAUDE_BLOCKED_OR_UNSET' });
   if (errors.length) issues.push({ severity: 'info', code: 'SAMPLING_ERRORS', count: errors.length });
-  const fallbackCandidates = [...new Set(relevant.filter(x => x.category === 'fallback' && x.host).map(x => x.host))].slice(0, 50);
+  if (overflow.count) issues.push({ severity: 'info', code: 'CONNECTION_LIMIT', count: overflow.count });
+  if (autoStopped) issues.push({ severity: 'info', code: 'MAX_DURATION_REACHED' });
   const status = !priorityOK || failures.length || !relay ? 'FAIL'
-    : config.mode !== 'rule' || !config.tun?.enable || !selectorsReady || groupsChanged || errors.length ||
-      !claude.length || segmentEvidence.conclusion !== 'SEGMENTS_OBSERVED'
-      ? 'INCONCLUSIVE' : 'PASS';
+    : config.mode !== 'rule' || !config.tun?.enable || !selectorsReady || groupsChanged ||
+      modeChanged || errors.length || overflow.count || autoStopped || !claude.length ||
+      segmentEvidence.conclusion !== 'SEGMENTS_OBSERVED' ? 'INCONCLUSIVE' : 'PASS';
   return {
-    schemaVersion: 1,
-    checkedAt: new Date().toISOString(),
-    status,
-    scope: 'Clash Verge active connections; no message content',
+    schemaVersion: 2,
+    startedAt, endedAt, status,
+    scope: 'All observed Clash active connections; metadata only',
     environment: {
       mode: config.mode || null, tun: Boolean(config.tun && config.tun.enable),
       relayReachable: relay, selectors: selectorsEnd, selectorsChanged: groupsChanged,
-      rulePriority: priority, rulePriorityOK: priorityOK
+      modeChanged, rulePriority: priority, rulePriorityOK: priorityOK
     },
     summary: {
-      sampledConnections: connections.length,
-      relevantConnections: relevant.length,
-      claudeConnections: claude.length,
+      samples: sampleCount,
+      observedConnections: all.length,
+      activeConnections: active.length,
+      activeClaudeConnections: claude.length,
       passed: evaluated.length - failures.length,
       failed: failures.length
     },
     claudeSegments: segmentEvidence,
     issues,
-    observations: relevant.slice(0, 200),
-    fallbackCandidates,
+    connections: all,
+    fallbackCandidates: [...new Set(relevant.filter(x => x.category === 'fallback' && x.host).map(x => x.host))].slice(0, 100),
     limitations: [
-      'Clash /connections 只包含采样时仍活动的连接；未出现的流量不能判定为通过。',
+      'Clash /connections 是活跃连接快照，极短连接仍可能在采样间隔内消失。',
+      '已有连接仅在采样期间字节数增加时计入本次活动；新连接按建立时间识别。',
       '转发、中转和出口是不同连接；观察到各段不等于逐请求精确关联。',
-      '节点实际公网出口 IP 需要目标网站回显或独立探测，分组名称不能证明地理位置。'
+      '节点名称不能证明实际公网出口 IP。'
     ]
   };
 }
 
-async function run(options) {
-  const socketPath = process.env.CLASH_CONTROLLER_SOCKET ||
-    '/var/run/clash-verge-service/users/' + process.getuid() + '/verge-mihomo.sock';
-  const [config, proxiesStart, rules, relay] = await Promise.all([
-    getJSON(socketPath, '/configs'),
-    getJSON(socketPath, '/proxies'),
-    getJSON(socketPath, '/rules'),
-    relayReachable()
-  ]);
-  const seen = new Map();
-  const errors = [];
-  const stopAt = Date.now() + options.seconds * 1000;
-  do {
+function markdown(report, jsonPath) {
+  const clean = value => String(value === null || value === undefined ? '' : value)
+    .replace(/[\r\n|]/g, ' ').slice(0, 180);
+  const lines = [
+    '# Clash 流量检测报告',
+    '',
+    '- **结论**：' + report.status,
+    '- **采样**：' + report.startedAt + ' → ' + report.endedAt,
+    '- **模式 / TUN**：' + clean(report.environment.mode) + ' / ' + report.environment.tun,
+    '- **Claude 中转 / 出口**：' + clean(report.environment.selectors[policy.groups.claude]) +
+      ' / ' + clean(report.environment.selectors[policy.groups.claudeExit]),
+    '- **转发服务**：' + (report.environment.relayReachable ? '可达' : '不可达'),
+    '- **连接**：观察 ' + report.summary.observedConnections + ' 条；采样期间有活动 ' +
+      report.summary.activeConnections + ' 条；Claude 活动 ' + report.summary.activeClaudeConnections + ' 条',
+    '- **原始元数据**：' + jsonPath,
+    '',
+    '## 链路段',
+    '',
+    '- relay：' + report.claudeSegments.relayConnections,
+    '- 出口：' + report.claudeSegments.exitConnections,
+    '- 中转：' + report.claudeSegments.transitConnections,
+    '- 判定：' + report.claudeSegments.conclusion,
+    '',
+    '## 异常',
+    ''
+  ];
+  if (!report.issues.length) lines.push('未发现已证实异常。');
+  else for (const issue of report.issues) lines.push('- ' + clean(issue.code) + '：' + clean(issue.host || issue.detail || issue.count || ''));
+  lines.push('', '## 相关活动连接', '',
+    '| 域名 | 进程 | 命中规则 | 实际链路 | 结果 | 上传 / 下载变化 |',
+    '| --- | --- | --- | --- | --- | --- |');
+  for (const item of report.connections.filter(x => x.activeDuringCapture && x.category !== 'other').slice(0, 100)) {
+    lines.push('| ' + clean(item.host) + ' | ' + clean(item.process) + ' | ' +
+      clean(item.rule + ':' + item.rulePayload) + ' | ' + clean(item.chains.join(' → ')) +
+      ' | ' + item.result + ' | ' + item.uploadDelta + ' / ' + item.downloadDelta + ' |');
+  }
+  if (!report.summary.activeClaudeConnections) lines.push('', '本次未观察到 Claude 请求活动，不能判定其业务链路正常。');
+  lines.push('', '## 边界', '', ...report.limitations.map(x => '- ' + x), '');
+  return lines.join('\n');
+}
+
+async function worker(dir) {
+  try {
+    const socketPath = process.env.CLASH_CONTROLLER_SOCKET ||
+      '/var/run/clash-verge-service/users/' + process.getuid() + '/verge-mihomo.sock';
+    const [config, proxiesStart, rules, relay] = await Promise.all([
+      getJSON(socketPath, '/configs'), getJSON(socketPath, '/proxies'),
+      getJSON(socketPath, '/rules'), relayReachable()
+    ]);
+    const startedAt = new Date().toISOString();
+    const seen = new Map();
+    const errors = [];
+    const overflow = { count: 0 };
+    let sampleCount = 0;
+    const sample = async () => {
+      try {
+        const data = await getJSON(socketPath, '/connections');
+        recordSnapshot(seen, data, new Date().toISOString(), startedAt, overflow);
+        sampleCount++;
+      } catch (error) { if (errors.length < 20) errors.push(error.message); }
+    };
+    await sample();
+    writeJSON(path.join(dir, 'ready.json'), { startedAt, pid: process.pid });
+    while (!fs.existsSync(path.join(dir, 'stop')) && Date.now() - Date.parse(startedAt) < MAX_MS) {
+      await sleep(INTERVAL_MS);
+      await sample();
+    }
+    const autoStopped = !fs.existsSync(path.join(dir, 'stop'));
+    const endedAt = new Date().toISOString();
+    let configEnd = config;
+    let proxiesEnd = proxiesStart;
     try {
-      const data = await getJSON(socketPath, '/connections');
-      const time = new Date().toISOString();
-      for (const connection of data.connections || []) {
-        const key = connection.id || [
-          connection.start, connection.metadata && connection.metadata.host,
-          connection.metadata && connection.metadata.processPath,
-          connection.rule, (connection.chains || []).join('/')
-        ].join('|');
-        if (!seen.has(key)) seen.set(key, { connection, seenAt: time });
-      }
-    } catch (error) { errors.push(error.message); }
-    await new Promise(resolve => setTimeout(resolve, options.intervalMs));
-  } while (Date.now() < stopAt);
-  const proxiesEnd = await getJSON(socketPath, '/proxies');
-  const report = buildReport({
-    config, selectorsStart: selectorSnapshot(proxiesStart),
-    selectorsEnd: selectorSnapshot(proxiesEnd),
-    connections: [...seen.values()], relay, rules, options, errors
+      [configEnd, proxiesEnd] = await Promise.all([
+        getJSON(socketPath, '/configs'), getJSON(socketPath, '/proxies')
+      ]);
+    } catch (error) { errors.push('结束时状态读取失败：' + error.message); }
+    const report = buildReport({
+      config, configEnd, selectorsStart: selectorSnapshot(proxiesStart),
+      selectorsEnd: selectorSnapshot(proxiesEnd), rules, relay,
+      connections: [...seen.values()], startedAt, endedAt,
+      sampleCount, errors, overflow, autoStopped
+    });
+    const jsonPath = path.join(dir, 'report.json');
+    const mdPath = path.join(dir, 'report.md');
+    writeJSON(jsonPath, report);
+    fs.writeFileSync(mdPath, markdown(report, jsonPath), { mode: 0o600 });
+    writeJSON(path.join(dir, 'done.json'), {
+      status: report.status, report: mdPath, raw: jsonPath,
+      startedAt, endedAt, summary: report.summary
+    });
+  } catch (error) {
+    writeJSON(path.join(dir, 'error.json'), { error: error.message, at: new Date().toISOString() });
+    process.exitCode = 1;
+  }
+}
+
+async function start() {
+  ensureBase();
+  if (fs.existsSync(POINTER)) {
+    const prior = currentSession();
+    if (!fs.existsSync(path.join(prior.dir, 'done.json')) &&
+        !fs.existsSync(path.join(prior.dir, 'error.json')) &&
+        isAlive(prior.pid)) throw new Error('已有采样正在进行；先回复结束检测');
+  }
+  const dir = fs.mkdtempSync(path.join(BASE_DIR, 'session-'));
+  fs.chmodSync(dir, 0o700);
+  fs.writeFileSync(path.join(dir, 'session.marker'), 'clash-traffic-monitor-v2\n', { mode: 0o600 });
+  const log = fs.openSync(path.join(dir, 'worker.log'), 'a', 0o600);
+  const child = spawn(process.execPath, [__filename, 'worker', dir], {
+    detached: true, stdio: ['ignore', log, log], env: process.env
   });
-  const desktop = path.join(os.homedir(), 'Desktop');
-  if (!fs.existsSync(desktop)) throw new Error('桌面目录不存在：' + desktop);
-  const stamp = report.checkedAt.replace(/[:.]/g, '-');
-  const target = path.join(desktop, 'clash-traffic-check-' + stamp + '.json');
-  report.savedTo = target;
-  fs.writeFileSync(target, JSON.stringify(report, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
-  process.stderr.write('已保存本地报告：' + target + '\n');
-  process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+  child.unref();
+  fs.closeSync(log);
+  writeJSON(POINTER, { dir, pid: child.pid });
+  for (let i = 0; i < 50; i++) {
+    if (fs.existsSync(path.join(dir, 'ready.json'))) {
+      return { state: 'READY', dir, ...readJSON(path.join(dir, 'ready.json')) };
+    }
+    if (fs.existsSync(path.join(dir, 'error.json'))) throw new Error(readJSON(path.join(dir, 'error.json')).error);
+    if (!isAlive(child.pid)) throw new Error('采样进程已退出；查看 ' + path.join(dir, 'worker.log'));
+    await sleep(200);
+  }
+  process.kill(child.pid, 'SIGTERM');
+  throw new Error('采样启动超时');
+}
+
+async function stop() {
+  const state = currentSession();
+  const donePath = path.join(state.dir, 'done.json');
+  if (!fs.existsSync(donePath)) fs.writeFileSync(path.join(state.dir, 'stop'), '', { mode: 0o600 });
+  for (let i = 0; i < 100; i++) {
+    if (fs.existsSync(donePath)) return { state: 'DONE', ...readJSON(donePath) };
+    if (fs.existsSync(path.join(state.dir, 'error.json'))) throw new Error(readJSON(path.join(state.dir, 'error.json')).error);
+    if (!isAlive(state.pid)) throw new Error('采样进程异常退出；查看 ' + path.join(state.dir, 'worker.log'));
+    await sleep(200);
+  }
+  throw new Error('采样停止超时；可再次执行 stop');
+}
+
+function status() {
+  const state = currentSession();
+  const done = path.join(state.dir, 'done.json');
+  if (fs.existsSync(done)) return { state: 'DONE', ...readJSON(done) };
+  if (fs.existsSync(path.join(state.dir, 'error.json'))) return { state: 'ERROR', ...readJSON(path.join(state.dir, 'error.json')) };
+  return { state: isAlive(state.pid) ? 'RUNNING' : 'STOPPED_UNEXPECTEDLY',
+    dir: state.dir, ready: fs.existsSync(path.join(state.dir, 'ready.json')) };
+}
+
+function clear() {
+  ensureBase();
+  if (fs.existsSync(POINTER)) {
+    const state = currentSession();
+    if (!fs.existsSync(path.join(state.dir, 'done.json')) &&
+        !fs.existsSync(path.join(state.dir, 'error.json')) &&
+        isAlive(state.pid)) throw new Error('采样仍在进行；先结束检测');
+  }
+  let removed = 0;
+  for (const name of fs.readdirSync(BASE_DIR)) {
+    if (!name.startsWith('session-')) continue;
+    const dir = path.join(BASE_DIR, name);
+    if (!fs.existsSync(path.join(dir, 'session.marker'))) continue;
+    fs.rmSync(dir, { recursive: true, force: true });
+    removed++;
+  }
+  if (fs.existsSync(POINTER)) fs.unlinkSync(POINTER);
+  return { state: 'CLEARED', removedSessions: removed };
+}
+
+async function main() {
+  const command = process.argv[2] || 'help';
+  if (command === 'help' || command === '--help') {
+    process.stdout.write('用法：node check.cjs start|stop|status|clear\n报告保存在对话临时目录；采样持续到 stop，最长 60 分钟。\n');
+    return;
+  }
+  if (command === 'worker') { await worker(process.argv[3]); return; }
+  const result = command === 'start' ? await start()
+    : command === 'stop' ? await stop()
+    : command === 'status' ? status()
+    : command === 'clear' ? clear()
+    : (() => { throw new Error('未知命令：' + command); })();
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
 }
 
 if (require.main === module) {
-  try {
-    const options = parseArgs(process.argv.slice(2));
-    if (options.help) {
-      process.stdout.write('用法：node traffic-monitor/check.cjs [--seconds 30] [--interval-ms 500]\n每次在桌面保存 JSON 报告；只读取 Clash 状态与连接。\n');
-    } else {
-      run(options).catch(error => { process.stderr.write('检测失败：' + error.message + '\n'); process.exitCode = 1; });
-    }
-  } catch (error) { process.stderr.write(error.message + '\n'); process.exitCode = 1; }
+  main().catch(error => { process.stderr.write('检测失败：' + error.message + '\n'); process.exitCode = 1; });
 }
-module.exports = { classify, evaluateConnection, buildReport, parseArgs };
+module.exports = { classify, safeObservation, evaluateConnection, buildReport, recordSnapshot, markdown };

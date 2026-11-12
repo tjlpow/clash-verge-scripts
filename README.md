@@ -135,11 +135,17 @@ Shadowrocket 的 AI UDP 拦截使用逻辑规则引用远程 AI 规则集。导�
 - **Clash Verge**　编辑本机 `Script.js`，完成检查后提交到仓库的 `clash-verge.js`，转发逻辑变化时重载本机辅助进程，再提示用户自行重启 Clash 并验证。
 - **Shadowrocket**　编辑本机配置，文件名使用当天日期 `Shadowrocket-YYYY-MM-DD.conf`。当天更新沿用该文件名；清理诊断配置和旧修订，保留当天正式配置。检查后提交到仓库的 `Shadowrocket.conf`，再提示用户从 iCloud 导入并启用当天正式配置，核对 DNS 后在手机上测试。
 
-## 手动流量检测
+## 对话式流量检测
 
-检测流程见 [traffic-monitor/README.md](traffic-monitor/README.md)。在新对话中只需发送以下一条提示词：
+本流程在当前对话中操作，不需要桌面程序或定时任务。连接元数据与报告保存在对话临时目录；选择清除后，报告链接失效。
 
-- **代码检测**：请阅读 https://github.com/tjlpow/clash-verge-scripts/blob/main/traffic-monitor/README.md，按其中的“代码检测”执行。
-- **模型检测**：请阅读 https://github.com/tjlpow/clash-verge-scripts/blob/main/traffic-monitor/README.md，按其中的“模型检测”执行。
+1. **预载**：复制下面的提示词发送给模型。模型会读取[检测流程](traffic-monitor/README.md)，准备程序，然后告诉你下一步。
+2. **开始**：按回复中的数字选项开始后台采样。收到“已开始”后，在 Claude 中完成要测试的操作。
+3. **结束**：按数字选项结束采样。模型先做代码分析，给出报告链接和简短结论，再提供模型复检、重新检测、清除报告三个数字选项。
+4. **复检与优化**：选模型复检后，结果追加到同一份报告；再按数字选项决定是否优化脚本。优化后可重新检测或清除报告。
 
-指定应用或服务可在提示词后补充名称；不补充时检查采样期间的活动连接。
+### 预载提示词
+
+```text
+请阅读 https://github.com/tjlpow/clash-verge-scripts/blob/main/traffic-monitor/README.md，执行其中的“预载”阶段。此后在本对话中按该文档的数字选项推进；每次只给我当前阶段的操作指引。
+```

@@ -47,13 +47,21 @@ function activeMode() {
 
 function checkReady(name, variant) {
   if (variant.state !== "ready") {
-    throw new Error(`${name} 版仍为 draft；规则和断流测试完成前不能启用`);
+    throw new Error(`${name} 版仍为 draft；真实出口链路通过验收前不能启用`);
   }
   if (!/\bfunction\s+main\s*\(/.test(variant.content.toString("utf8"))) {
     throw new Error(`${name} 版缺少 main(config)，不能启用`);
   }
   const result = child.spawnSync(process.execPath, ["--check", variant.file], { encoding: "utf8" });
   if (result.status !== 0) throw new Error(`${name} 版语法检查失败：${result.stderr.trim()}`);
+  if (name === "safe") {
+    for (const file of ["safe-direct.yaml", "safe-cncidr.yaml", "safe-reject.yaml", "safe-ai-cn.yaml"]) {
+      const cache = path.join(root, file);
+      if (!fs.existsSync(cache) || !fs.readFileSync(cache, "utf8").slice(0, 600).includes("payload:")) {
+        throw new Error(`缺少有效的 ${file}；请先预存安全版规则集`);
+      }
+    }
+  }
 }
 
 // 原位写入，保留 Clash Verge 已登记的 Script.js 文件与 inode。

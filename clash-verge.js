@@ -108,6 +108,9 @@ const CLAUDE_EXIT_OFF_NAME = "Exit Off";
 const CLAUDE_EXIT_PROVIDER_NAME = "ClaudeExit";
 const CLAUDE_EXIT_UPSTREAM_NAME = "claude-exit-upstream";
 const CLAUDE_EXIT_UPSTREAM_PORT = 7901;
+// 安全链式版由同一个本机辅助进程处理 Claude IPv4 请求。
+const SAFE_JUMP_GROUP_NAME = "🪜 Jump";
+const SAFE_EXIT_GROUP_NAME = "🌍 Overseas Exit";
 
 // —— 需要独立选节点的站点 ——
 // name     : 生成的策略组名，会出现在「代理」页里
@@ -963,26 +966,30 @@ function readClaudeRoute(options = {}) {
       response.once("end", () => {
         try {
           const proxies = JSON.parse(Buffer.concat(chunks).toString("utf8")).proxies;
-          const exit = proxies?.[CLAUDE_EXIT_GROUP_NAME];
+          const safeMode = Boolean(proxies?.[SAFE_EXIT_GROUP_NAME] || proxies?.[SAFE_JUMP_GROUP_NAME]);
+          const exitName = safeMode ? SAFE_EXIT_GROUP_NAME : CLAUDE_EXIT_GROUP_NAME;
+          const transitName = safeMode ? SAFE_JUMP_GROUP_NAME : CLAUDE_GROUP_NAME;
+          const exit = proxies?.[exitName];
           if (exit?.type !== "Selector" || typeof exit.now !== "string" || !exit.all?.includes(exit.now)) throw new Error("Claude Exit selection missing");
-          const transit = proxies?.[CLAUDE_GROUP_NAME];
+          const transit = proxies?.[transitName];
           if (transit?.type !== "Selector" || typeof transit.now !== "string" || !transit.all?.includes(transit.now)) throw new Error("Claude transit selection missing");
           const trace = [];
           const seen = new Set();
-          let name = CLAUDE_GROUP_NAME;
+          let name = transitName;
           while (name) {
-            if (seen.has(name) || trace.length >= 12 || ["DIRECT", "COMPATIBLE", "REJECT", "REJECT-DROP", CLAUDE_EXIT_GROUP_NAME, CLAUDE_EXIT_OFF_NAME].includes(name)) throw new Error("Claude transit rejected");
+            if (seen.has(name) || trace.length >= 12 || ["DIRECT", "COMPATIBLE", "REJECT", "REJECT-DROP", CLAUDE_EXIT_GROUP_NAME, SAFE_EXIT_GROUP_NAME, CLAUDE_EXIT_OFF_NAME].includes(name)) throw new Error("Claude transit rejected");
             seen.add(name);trace.push(name);
             const proxy = proxies[name];
             if (proxy && ["Direct", "Compatible", "Reject", "RejectDrop"].includes(proxy.type)) throw new Error("Claude transit rejected");
             name = proxy?.now || null;
           }
           if (exit.now === "REJECT") throw new Error("Claude Exit rejected");
-          const off = exit.now === CLAUDE_EXIT_OFF_NAME;
+          const off = !safeMode && exit.now === CLAUDE_EXIT_OFF_NAME;
           if (!off && ["DIRECT", "COMPATIBLE", "REJECT-DROP"].includes(exit.now)) throw new Error("invalid Claude Exit selection");
+          if (safeMode && exit.now === CLAUDE_EXIT_OFF_NAME) throw new Error("safe exit cannot be disabled");
           finish(null, {
             port: off ? CLAUDE_IPV4_UPSTREAM_PORT : CLAUDE_EXIT_UPSTREAM_PORT,
-            key: JSON.stringify([exit.now, trace])
+            key: JSON.stringify([exitName, exit.now, trace])
           });
         } catch (error) { finish(error); }
       });

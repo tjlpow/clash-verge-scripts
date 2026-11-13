@@ -3,7 +3,7 @@
 | 文件 | 用途 |
 | --- | --- |
 | [clash-verge.js](clash-verge.js) | Clash Verge 现有分流版源码 |
-| [clash-verge-safe.js](clash-verge-safe.js) | Clash Verge 文章链式版，待实网验收，暂不可启用 |
+| [clash-verge-safe.js](clash-verge-safe.js) | Clash Verge 文章链式版，可按需切换 |
 | [switch-clash-verge.js](switch-clash-verge.js) | 本机版本切换命令；运行入口仍为 `Script.js` |
 | [Shadowrocket.conf](Shadowrocket.conf) | Shadowrocket 的分流配置 |
 
@@ -15,7 +15,7 @@
 
 1. **添加机场**　在全局扩展配置 `Merge.yaml` 中声明 `proxy-providers`。每个机场一项，使用不同的缓存路径。
 2. **放置脚本**　把两个 Clash 版本源码及 `switch-clash-verge.js` 放在 `~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/profiles/`。Clash Verge 的全局扩展脚本仍只登记 `Script.js`。
-3. **选择版本**　在该目录运行 `node switch-clash-verge.js status` 查看状态，运行 `node switch-clash-verge.js current` 写入现有版。`safe` 版待实网验收，切换命令暂时拒绝启用。
+3. **选择版本**　在该目录运行 `node switch-clash-verge.js status` 查看状态，运行 `node switch-clash-verge.js current` 或 `node switch-clash-verge.js safe` 写入对应版本。
 4. **加载配置**　首次安装时选用一份订阅或本地配置作为载体。切换命令不重启或操作 Clash Verge；写入后由用户自行重启并验证分流。
 
 `Merge.yaml` 示例：
@@ -50,7 +50,7 @@ Clash 版的 Claude 请求另经本机 IPv4 转发层：实时查询目标的 A 
 ## Clash Verge 版本切换
 
 - **现有版**　`clash-verge.js` 保留当前分组及 Claude 专属链式出口；本机 `Script.js` 是它的运行副本。
-- **文章版**　`clash-verge-safe.js` 已实现文章模式 B 的分流：国内 AI、B 站、微信、国内域名和中国 IP 直连；其余流量统一经 `🪜 Jump` → `🌍 Overseas Exit` 的手选跳板与 ISP 出口。`GEOSITE,geolocation-!cn` 排在国内域名名单前，补上 `mirrorakam` 关键词和 `100.64.0.0/10`。ISP 不能直连；两组都没有 DIRECT 或自动切换，默认 REJECT。真实出口链验证完成前保持 `draft`，切换命令禁止启用。
+- **文章版**　`clash-verge-safe.js` 已实现文章模式 B 的分流：国内 AI、B 站、微信、国内域名和中国 IP 直连；其余流量统一经 `🪜 Jump` → `🌍 Overseas Exit` 的手选跳板与 ISP 出口。`GEOSITE,geolocation-!cn` 排在国内域名名单前，补上 `mirrorakam` 关键词和 `100.64.0.0/10`。ISP 不能直连；两组都没有 DIRECT 或自动切换，默认 REJECT。隔离内核已验证真实 ISP 出口和 Claude IPv4 转发；切换后仍需在 Clash Verge 中手选两个节点并实测。
 - **切换命令**　`node switch-clash-verge.js status` 查看当前版本；`node switch-clash-verge.js current` 选择现有版；文章版完成实网验收并标记 `ready` 后才能运行 `node switch-clash-verge.js safe`。命令检查源码与本机规则缓存、原位写入 `Script.js` 并校验内容，不修改 Clash 设置或节点选择。若 `Script.js` 与两份源码都不一致，命令拒绝覆盖，需先核对改动。
 - **辅助进程**　Claude IPv4 转发进程固定读取本机 `clash-verge.js`，不读取会随版本切换的 `Script.js`。现有版转发逻辑更新后，运行 `node clash-verge.js --install-claude-ipv4` 重载辅助进程。
 - **本机私有配置**　`Merge.yaml` 继续保存机场订阅和 ISP 凭据，不提交仓库。文章版完成后也使用这份凭据；源脚本与切换命令不包含账号密码。
@@ -71,7 +71,7 @@ Shadowrocket 按域名和 IP 分流。远程规则集随配置更新，自动测
 
 ## 策略组选项
 
-以下描述当前可用的 Clash 现有版和 Shadowrocket 版；文章链式版仍为草稿。
+以下描述 Clash 现有版和 Shadowrocket 版；文章链式版采用上文所述的统一出口分流。
 
 | 流量 | 策略 |
 | --- | --- |
@@ -150,8 +150,8 @@ Shadowrocket 的 AI UDP 拦截使用逻辑规则引用远程 AI 规则集。导�
 ## 更新流程
 
 - **Clash 现有版**　编辑本机 `clash-verge.js`，完成语法与分流检查后运行 `node switch-clash-verge.js current`，同步到 `Script.js`。转发逻辑变化时运行 `node clash-verge.js --install-claude-ipv4`。核对远程最新版本后提交 `clash-verge.js` 和相关 README，提示用户自行重启 Clash 并验证。维护时不切换 Clash 模式、节点或激活配置。
-- **Clash 文章链式版**　只编辑 `clash-verge-safe.js`，先做语法、规则、独立内核与真实出口链测试。实网验收前保持 `draft`，不写入 `Script.js`；验收通过后改为 `ready`，运行 `node switch-clash-verge.js safe`。核对远程版本后提交源码与 README，再由用户自行重启并验证。首次切换时在新组中手选跳板和 ISP 出口。
-- **切换命令**　修改 `switch-clash-verge.js` 后分别测试 `status`、现有版切换及草稿版拒绝；核对远程版本后单独提交，不触碰私有 `Merge.yaml`。
+- **Clash 文章链式版**　只编辑 `clash-verge-safe.js`，先做语法、规则、独立内核与真实出口链测试。验收通过后运行 `node switch-clash-verge.js safe` 写入 `Script.js`。核对远程版本后提交源码与 README，再由用户自行重启并验证。首次切换时在新组中手选跳板和 ISP 出口。
+- **切换命令**　修改 `switch-clash-verge.js` 后测试 `status`、两版切换及缓存缺失时的拒绝；核对远程版本后单独提交，不触碰私有 `Merge.yaml`。
 - **Shadowrocket**　编辑本机配置，文件名使用当天日期 `Shadowrocket-YYYY-MM-DD.conf`。当天更新沿用该文件名；清理诊断配置和旧修订，保留当天正式配置。检查后提交到仓库的 `Shadowrocket.conf`，再提示用户从 iCloud 导入并启用当天正式配置，核对 DNS 后在手机上测试。
 
 ## 对话式流量检测

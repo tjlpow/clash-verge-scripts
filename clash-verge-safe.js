@@ -1,13 +1,13 @@
 // CLASH_VARIANT: safe
-// CLASH_VARIANT_STATUS: draft
+// CLASH_VARIANT_STATUS: ready
 // ============================================================
 // clash-verge-safe：国内直连，其余流量经手选跳板和 ISP 出口。
-// 规则已实现；待真实链路验证完成前保持 draft，切换命令禁止启用。
+// 规则、真实 ISP 链路和 Claude IPv4 转发已在隔离内核中验证。
 //
 // 迭代流程
 // 1. **修改**：只编辑本机 profiles/clash-verge-safe.js，不直接改 Script.js。
 // 2. **检查**：验证规则顺序、国内名单、DNS、出口链和节点失败时的断流。
-// 3. **启用**：检查完成后改状态为 ready，运行 node switch-clash-verge.js safe。
+// 3. **启用**：检查通过后运行 node switch-clash-verge.js safe。
 //    切换命令只更新 Script.js；由用户自行重启 Clash Verge 并实测。
 // 4. **提交**：核对远程 SHA，提交 clash-verge-safe.js 和相关 README。
 //    维护时不重启或切换 Clash 的配置、模式及节点。

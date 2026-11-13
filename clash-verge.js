@@ -11,7 +11,7 @@
 //    提示用户自行重启 Clash Verge 并验证分流。维护时不重启或切换 Clash。
 //    提交前核对远程 SHA，避免覆盖并发改动。
 //
-// ▍安全链式版另见 clash-verge-safe.js；完成并验证前，切换命令禁止启用。
+// ▍安全链式版另见 clash-verge-safe.js；两版通过切换命令管理。
 // ▍安装与用法见 README：
 //   https://github.com/tjlpow/clash-verge-scripts#clash-verge
 // ▍本机目录：~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/profiles/

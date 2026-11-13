@@ -1,17 +1,22 @@
+// CLASH_VARIANT: current
+// CLASH_VARIANT_STATUS: ready
 // ============================================================
-// 维护流程
-// 1. **修改**：直接编辑本机 profiles/Script.js，保留 Clash Verge 读取的文件名。
-// 2. **检查与提交**：检查后提交 tjlpow/clash-verge-scripts 的 clash-verge.js。
-//    单文件更新时核对远程 SHA，避免覆盖并发改动。
-// 3. **辅助进程**：首次安装或修改转发逻辑后，运行 node Script.js --install-claude-ipv4。
-//    辅助进程由 macOS 登录项常驻，只监听本机；更新时重载辅助进程。
-// 4. **生效**：提示用户自行重启 Clash Verge 并验证分流。维护时不重启或切换 Clash。
+// 迭代流程
+// 1. **修改**：编辑本机 profiles/clash-verge.js；Script.js 是 Clash Verge 的运行副本。
+// 2. **检查**：验证脚本与现有分流，再运行 node switch-clash-verge.js current
+//    将版本写入 Script.js。切换命令不会重启 Clash Verge。
+// 3. **辅助进程**：首次安装或修改转发逻辑后，运行 node clash-verge.js --install-claude-ipv4。
+//    辅助进程固定读取 clash-verge.js，不随 Script.js 的版本切换而改变。
+// 4. **提交与生效**：检查后提交仓库的 clash-verge.js 和相关 README；
+//    提示用户自行重启 Clash Verge 并验证分流。维护时不重启或切换 Clash。
+//    提交前核对远程 SHA，避免覆盖并发改动。
 //
+// ▍安全链式版另见 clash-verge-safe.js；完成并验证前，切换命令禁止启用。
 // ▍安装与用法见 README：
 //   https://github.com/tjlpow/clash-verge-scripts#clash-verge
 // ▍本机目录：~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/profiles/
 // ▍机场订阅链接和出口账号密码仅保存在本机 Merge.yaml。
-// ▍内置脚本编辑器可能覆盖磁盘改动，修改后请避免保存旧编辑窗口。
+// ▍内置脚本编辑器可能覆盖 Script.js，切换后请避免保存旧编辑窗口。
 // ============================================================
 
 // ============================================================
@@ -59,7 +64,7 @@
 // ============================================================
 
 // —— 主代理组名 ——
-// 两版统一使用 🚀 main、🐟 Fallback、🤖 AI。
+// 当前 Clash 版与 Shadowrocket 版统一使用 🚀 main、🐟 Fallback、🤖 AI。
 // 单订阅模式先识别订阅主组，再统一名称并更新引用。
 const MAIN_GROUP_NAME = "🚀 main";
 const MAIN_GROUP_CANDIDATES = [
@@ -1211,11 +1216,13 @@ function installClaudeIPv4Relay() {
   const file = path.join(os.homedir(), "Library", "LaunchAgents", `${label}.plist`);
   const executable = fs.existsSync("/opt/homebrew/bin/node") ? "/opt/homebrew/bin/node" : process.execPath;
   const xml = value => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const sourceFile = path.join(__dirname, "clash-verge.js");
+  if (!fs.existsSync(sourceFile)) throw new Error("缺少 clash-verge.js，无法安装辅助进程");
   const text = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>${label}</string>
-<key>ProgramArguments</key><array><string>${xml(executable)}</string><string>${xml(__filename)}</string><string>--claude-ipv4-relay</string></array>
+<key>ProgramArguments</key><array><string>${xml(executable)}</string><string>${xml(sourceFile)}</string><string>--claude-ipv4-relay</string></array>
 <key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer>
 <key>StandardOutPath</key><string>/tmp/clash-claude-ipv4.stdout.log</string>
 <key>StandardErrorPath</key><string>/tmp/clash-claude-ipv4.stderr.log</string>
@@ -1242,6 +1249,6 @@ if (typeof module !== "undefined" && typeof require === "function") {
       const relay = createClaudeIPv4Relay();
       relay.listen().then(() => console.log(`Claude IPv4 relay listening on 127.0.0.1:${CLAUDE_IPV4_RELAY_PORT}`)).catch(error => { console.error(error.message); process.exitCode = 1; });
       for (const signal of ["SIGTERM", "SIGINT"]) process.once(signal, () => relay.close().then(() => process.exit(0)));
-    } else console.log("用法：node Script.js --install-claude-ipv4 或 --claude-ipv4-relay");
+    } else console.log("用法：node clash-verge.js --install-claude-ipv4 或 --claude-ipv4-relay");
   }
 }

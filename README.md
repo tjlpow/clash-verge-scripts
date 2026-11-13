@@ -2,18 +2,21 @@
 
 | 文件 | 用途 |
 | --- | --- |
-| [clash-verge.js](clash-verge.js) | Clash Verge 的全局扩展脚本 |
+| [clash-verge.js](clash-verge.js) | Clash Verge 现有分流版源码 |
+| [clash-verge-safe.js](clash-verge-safe.js) | Clash Verge 文章链式版草稿，尚不可启用 |
+| [switch-clash-verge.js](switch-clash-verge.js) | 本机版本切换命令；运行入口仍为 `Script.js` |
 | [Shadowrocket.conf](Shadowrocket.conf) | Shadowrocket 的分流配置 |
 
-两版都用国内域名规则集和 `GEOIP,CN` 补齐直连，并为常用服务保留独立策略组。机场订阅链接是凭证，请保存在本机的 `Merge.yaml` 或 Shadowrocket App 中。
+目前可用的 Clash 现有版与 Shadowrocket 版都用国内域名规则集和 `GEOIP,CN` 补齐直连，并为常用服务保留独立策略组。机场订阅链接是凭证，请保存在本机的 `Merge.yaml` 或 Shadowrocket App 中。
 
-两版的主代理组统一为 `🚀 main`，兜底组为 `🐟 Fallback`，国外 AI 组为 `🤖 AI`，Clash 的 Claude 使用 `🧠 Claude` 中转组和 `🌐 Claude Exit` 出口组；Shadowrocket 使用独立的 `Claude` 组。
+目前可用的两版主代理组统一为 `🚀 main`，兜底组为 `🐟 Fallback`，国外 AI 组为 `🤖 AI`，Clash 的 Claude 使用 `🧠 Claude` 中转组和 `🌐 Claude Exit` 出口组；Shadowrocket 使用独立的 `Claude` 组。
 
 ## Clash Verge
 
 1. **添加机场**　在全局扩展配置 `Merge.yaml` 中声明 `proxy-providers`。每个机场一项，使用不同的缓存路径。
-2. **安装脚本**　把 [clash-verge.js](clash-verge.js) 的内容保存到 Clash Verge 的全局扩展脚本 `Script.js`。macOS 上的目录是 `~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/profiles/`。
-3. **加载配置**　首次安装时选用一份订阅或本地配置作为载体。以后修改磁盘上的 `Script.js`，由用户自行重启 Clash Verge，再验证分流。
+2. **放置脚本**　把两个 Clash 版本源码及 `switch-clash-verge.js` 放在 `~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/profiles/`。Clash Verge 的全局扩展脚本仍只登记 `Script.js`。
+3. **选择版本**　在该目录运行 `node switch-clash-verge.js status` 查看状态，运行 `node switch-clash-verge.js current` 写入现有版。`safe` 版尚未实现，切换命令会拒绝启用。
+4. **加载配置**　首次安装时选用一份订阅或本地配置作为载体。切换命令不重启或操作 Clash Verge；写入后由用户自行重启并验证分流。
 
 `Merge.yaml` 示例：
 
@@ -40,9 +43,18 @@ Clash 版按进程匹配 Claude 和微信。Terminal、Cursor 及其交互终端
 
 Clash 版的 Claude 请求另经本机 IPv4 转发层：实时查询目标的 A 记录，再按 IPv4 地址通过选定的中转／出口连接。TLS 数据原样转发，不解密对话。已收录国内 AI 仍先直连。
 
-**首次启用 IPv4 转发**：安装 Node.js 后，在本机 `profiles` 目录运行 `node Script.js --install-claude-ipv4`。macOS 会安装随登录启动的本机辅助进程；然后由用户自行重启 Clash Verge。更新转发逻辑后重新运行同一命令。其他系统需自行常驻运行 `node Script.js --claude-ipv4-relay`。
+**首次启用 IPv4 转发**：安装 Node.js 后，在本机 `profiles` 目录运行 `node clash-verge.js --install-claude-ipv4`。macOS 会安装随登录启动的本机辅助进程；然后由用户自行重启 Clash Verge。更新转发逻辑后重新运行同一命令。其他系统需自行常驻运行 `node clash-verge.js --claude-ipv4-relay`。
 
 **本机端口**：`7899` 为 IPv4 转发层，`7900` 为单跳上游，`7901` 为链式上游，均只监听 `127.0.0.1`。辅助进程只读本机 Clash 控制 socket，获取两组当前选择；查询失败即断流。DNS 与业务连接共用选定路径，解析按路径和 TTL 缓存，最长 5 分钟；无 A 记录、辅助进程或任一节点不可用时断流，不退回直连、IPv6 或单跳。其他组的出口方式保持原样。本机回环代理连接跳过域名嗅探，避免已解析的 IPv4 被改回域名；TUN 的嗅探设置保留。
+
+## Clash Verge 版本切换
+
+- **现有版**　`clash-verge.js` 保留当前分组及 Claude 专属链式出口；本机 `Script.js` 是它的运行副本。
+- **文章版**　`clash-verge-safe.js` 目前只有迭代说明，没有分流逻辑。未来按文章模式 B 实现：国内规则直连，其余流量统一经手选跳板和 ISP 出口。ISP 不能直连；任一环不可用必须断流。完成规则和断流验证前，保持 `draft`，切换命令禁止启用。
+- **切换命令**　`node switch-clash-verge.js status` 查看当前版本；`node switch-clash-verge.js current` 选择现有版；文章版完成并标记 `ready` 后才能运行 `node switch-clash-verge.js safe`。命令检查源码、原位写入 `Script.js` 并校验内容，不修改 Clash 设置或节点选择。若 `Script.js` 与两份源码都不一致，命令拒绝覆盖，需先核对改动。
+- **辅助进程**　Claude IPv4 转发进程固定读取本机 `clash-verge.js`，不读取会随版本切换的 `Script.js`。现有版转发逻辑更新后，运行 `node clash-verge.js --install-claude-ipv4` 重载辅助进程。
+- **本机私有配置**　`Merge.yaml` 继续保存机场订阅和 ISP 凭据，不提交仓库。文章版完成后也使用这份凭据；源脚本与切换命令不包含账号密码。
+- **系统断网保护**　文章要求的 Clash 退出后断网属于系统防火墙能力，不能由切换脚本代替。文章版投入使用前需单独实现和验证。
 
 ## Shadowrocket
 
@@ -55,6 +67,8 @@ Shadowrocket 内置 `PROXY` 表示首页当前节点。常规代理组初始选�
 Shadowrocket 按域名和 IP 分流。远程规则集随配置更新，自动测速子组在支持 `hidden=1` 的版本中隐藏。
 
 ## 策略组选项
+
+以下描述当前可用的 Clash 现有版和 Shadowrocket 版；文章链式版仍为草稿。
 
 | 流量 | 策略 |
 | --- | --- |
@@ -132,7 +146,9 @@ Shadowrocket 的 AI UDP 拦截使用逻辑规则引用远程 AI 规则集。导�
 
 ## 更新流程
 
-- **Clash Verge**　编辑本机 `Script.js`，完成检查后提交到仓库的 `clash-verge.js`，转发逻辑变化时重载本机辅助进程，再提示用户自行重启 Clash 并验证。
+- **Clash 现有版**　编辑本机 `clash-verge.js`，完成语法与分流检查后运行 `node switch-clash-verge.js current`，同步到 `Script.js`。转发逻辑变化时运行 `node clash-verge.js --install-claude-ipv4`。核对远程最新版本后提交 `clash-verge.js` 和相关 README，提示用户自行重启 Clash 并验证。维护时不切换 Clash 模式、节点或激活配置。
+- **Clash 文章链式版**　只编辑 `clash-verge-safe.js`，完成规则与断流验证前保持 `draft`，不写入 `Script.js`。准备启用时将状态改为 `ready`，运行 `node switch-clash-verge.js safe`；核对远程版本后提交源码与 README，再由用户自行重启并验证。
+- **切换命令**　修改 `switch-clash-verge.js` 后分别测试 `status`、现有版切换及草稿版拒绝；核对远程版本后单独提交，不触碰私有 `Merge.yaml`。
 - **Shadowrocket**　编辑本机配置，文件名使用当天日期 `Shadowrocket-YYYY-MM-DD.conf`。当天更新沿用该文件名；清理诊断配置和旧修订，保留当天正式配置。检查后提交到仓库的 `Shadowrocket.conf`，再提示用户从 iCloud 导入并启用当天正式配置，核对 DNS 后在手机上测试。
 
 ## 对话式流量检测

@@ -6,6 +6,7 @@
 | [clash-verge-safe.js](clash-verge-safe.js) | Clash Verge 文章链式版，可按需切换 |
 | [switch-clash-verge.js](switch-clash-verge.js) | 本机版本切换命令；运行入口仍为 `Script.js` |
 | [Shadowrocket.conf](Shadowrocket.conf) | Shadowrocket 的分流配置 |
+| [shadowrocket-safe.conf](shadowrocket-safe.conf) | Shadowrocket 国内直连、其余走首页节点的安全版 |
 
 目前可用的 Clash 现有版与 Shadowrocket 版都用国内域名规则集和 `GEOIP,CN` 补齐直连，并为常用服务保留独立策略组。机场订阅链接是凭证，请保存在本机的 `Merge.yaml` 或 Shadowrocket App 中。
 
@@ -68,6 +69,12 @@ Clash 版的 Claude 请求另经本机 IPv4 转发层：实时查询目标的 A 
 Shadowrocket 内置 `PROXY` 表示首页当前节点。常规代理组初始选择 `PROXY`，先在首页选中已验证可用的节点，再按需在各组中改选 `🚀 main`、地区组或单个节点。bilibili 初始直连，`🐟 Fallback` 和 iCloud 可手选直连。
 
 Shadowrocket 按域名和 IP 分流。远程规则集随配置更新，自动测速子组在支持 `hidden=1` 的版本中隐藏。
+
+### Shadowrocket 安全版
+
+- **规则**　[shadowrocket-safe.conf](shadowrocket-safe.conf) 将 Claude 自有域名和 Loyalsoldier 的 `proxy.txt` 放在国内名单前；国内使用 `direct.txt`、`cncidr.txt`，并保留现有版的 SukkaW、ChinaMax_Domain 和国内 AI 名单。局域网与保留地址直连，其余流量以 `FINAL,PROXY` 交给首页当前节点。
+- **导入**　将文件放入 iCloud Drive 的 `Shadowrocket/Documents`，在 iPhone 从文件导入并启用。先在首页选定已验证的海外节点，保持连接开启，并把全局路由设为「配置」。不需在文件中填写节点或订阅。
+- **验证**　确认百度直连、[ipinfo.io](https://ipinfo.io/) 显示当前海外节点出口；关闭该节点后确认 [claude.ai](https://claude.ai/) 无法连接。还要在手机端核对远程规则集已加载、DNS 覆写和连接日志。配置无法在 Shadowrocket 关闭时维持系统断网。
 
 ## 策略组选项
 

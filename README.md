@@ -54,10 +54,10 @@ Clash 版的 Claude 请求另经本机 IPv4 转发层：实时查询目标的 A 
 - **切换命令**　`node switch-clash-verge.js status` 查看当前版本；`node switch-clash-verge.js current` 选择现有版；文章版完成实网验收并标记 `ready` 后才能运行 `node switch-clash-verge.js safe`。命令检查源码与本机规则缓存、原位写入 `Script.js` 并校验内容，不修改 Clash 设置或节点选择。若 `Script.js` 与两份源码都不一致，命令拒绝覆盖，需先核对改动。
 - **辅助进程**　Claude IPv4 转发进程固定读取本机 `clash-verge.js`，不读取会随版本切换的 `Script.js`。现有版转发逻辑更新后，运行 `node clash-verge.js --install-claude-ipv4` 重载辅助进程。
 - **本机私有配置**　`Merge.yaml` 继续保存机场订阅和 ISP 凭据，不提交仓库。文章版完成后也使用这份凭据；源脚本与切换命令不包含账号密码。
-- **DNS 与缓存**　海外 DoH 经 `🌍 Overseas Exit`；国内直连和节点引导解析使用国内 DNS。四份自动更新的规则缓存保存在本机 `profiles/safe-*.yaml`，切换前必须存在有效缓存。Claude 仍使用本机 IPv4 转发层，辅助进程会读取文章版的跳板与出口选择。
-- **系统断网保护**　按用户当前要求，暂不实现退出 Clash 后的系统级断网开关。脚本中的 REJECT 只在 Clash 内核运行时生效。
+- **DNS 与缓存**　海外 DoH 固定使用 Cloudflare，经 `🌍 Overseas Exit`；国内直连和节点引导解析使用国内 DNS。`*.t.dnsleak.dev` 不返回 fake-ip，便于实测 DNS 出口。三份自动更新的规则缓存保存在本机 `profiles/safe-*.yaml`，切换前必须存在有效缓存。Claude 仍使用本机 IPv4 转发层，辅助进程会读取文章版的跳板与出口选择。
+- **系统断网保护**　脚本中的 REJECT 只在 Clash 内核运行时生效。退出 Clash 后的系统断网开关需在本机单独安装；其 PF 实现不随公开仓库发布。安装了本机断网开关时，先解除后才能用切换命令返回现有版。
 
-**首次准备规则缓存**：安全版使用 [Loyalsoldier 的 direct、cncidr、reject](https://github.com/Loyalsoldier/clash-rules) 和 [VPSDance 的国内 AI 规则](https://github.com/VPSDance/ai-proxy-rules)。首次切换前，将四份 YAML 分别保存为本机 `profiles/safe-direct.yaml`、`safe-cncidr.yaml`、`safe-reject.yaml`、`safe-ai-cn.yaml`。运行时会每日更新；出口不可用时保留现有缓存。
+**首次准备规则缓存**：安全版使用 [Loyalsoldier 的 direct、cncidr](https://github.com/Loyalsoldier/clash-rules) 和 [VPSDance 的国内 AI 规则](https://github.com/VPSDance/ai-proxy-rules)。首次切换前，将三份 YAML 分别保存为本机 `profiles/safe-direct.yaml`、`safe-cncidr.yaml`、`safe-ai-cn.yaml`。运行时会每日更新；出口不可用时保留现有缓存。安全版不加载广告拒绝集，避免海外遥测域名被提前拦截。
 
 ## Shadowrocket
 

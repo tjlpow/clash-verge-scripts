@@ -13,7 +13,7 @@
 //    维护时不重启或切换 Clash 的配置、模式及节点。
 //
 // 机场订阅和 ISP 凭据只存本机 Merge.yaml，不写入公开脚本。
-// 退出 Clash 后的系统级断网保护暂不实现；本版仅保证核心运行时的规则保护。
+// 退出 Clash 后的系统级断网保护由独立 clash-guard.sh 安装；脚本规则只在内核运行时生效。
 // ============================================================
 
 const SAFE_JUMP_GROUP = "🪜 Jump";
@@ -130,7 +130,6 @@ function main(config) {
   config["rule-providers"] = {
     "safe-direct": provider("direct", "domain", sourceBase + "direct.txt", SAFE_EXIT_GROUP),
     "safe-cncidr": provider("cncidr", "ipcidr", sourceBase + "cncidr.txt", SAFE_EXIT_GROUP),
-    "safe-reject": provider("reject", "domain", sourceBase + "reject.txt", SAFE_EXIT_GROUP),
     "safe-ai-cn": provider("ai-cn", "classical",
       "https://cdn.jsdelivr.net/gh/VPSDance/ai-proxy-rules@main/rules/clash/cn.yaml", SAFE_EXIT_GROUP)
   };
@@ -172,7 +171,6 @@ function main(config) {
   udpGuard.push("AND,((NETWORK,udp),(GEOSITE,geolocation-!cn)),REJECT");
 
   config.rules = [
-    "RULE-SET,safe-reject,REJECT",
     ...localRules,
     ...udpGuard,
     "RULE-SET,safe-ai-cn,DIRECT",
@@ -199,15 +197,13 @@ function main(config) {
     "enhanced-mode": "fake-ip",
     "fake-ip-range": "198.18.0.1/16",
     "fake-ip-filter": ["geosite:private", "+.lan", "+.local",
-      "+.in-addr.arpa", "+.ip6.arpa", "localhost.work.weixin.qq.com"],
+      "+.in-addr.arpa", "+.ip6.arpa", "localhost.work.weixin.qq.com",
+      "+.t.dnsleak.dev"],
     "default-nameserver": ["223.5.5.5", "119.29.29.29"],
     "proxy-server-nameserver": domesticDNS,
     "direct-nameserver": domesticDNS.map(function(url) { return url + "#DIRECT"; }),
     "direct-nameserver-follow-policy": true,
-    nameserver: [
-      "https://1.1.1.1/dns-query#" + SAFE_EXIT_GROUP,
-      "https://8.8.8.8/dns-query#" + SAFE_EXIT_GROUP
-    ],
+    nameserver: ["https://1.1.1.1/dns-query#" + SAFE_EXIT_GROUP],
     "nameserver-policy": { "geosite:private": "system" }
   };
 
@@ -236,6 +232,6 @@ function main(config) {
   config.mode = "rule";
   config.ipv6 = false;
   config["find-process-mode"] = "always";
-  // TUN 开关和 DNS 劫持由 Clash Verge 设置管理；系统级断网开关不在本脚本中。
+  // TUN 开关和 DNS 劫持由 Clash Verge 设置管理；系统级断网开关由 clash-guard.sh 管理。
   return config;
 }

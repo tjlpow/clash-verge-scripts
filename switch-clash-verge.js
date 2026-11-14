@@ -55,7 +55,7 @@ function checkReady(name, variant) {
   const result = child.spawnSync(process.execPath, ["--check", variant.file], { encoding: "utf8" });
   if (result.status !== 0) throw new Error(`${name} 版语法检查失败：${result.stderr.trim()}`);
   if (name === "safe") {
-    for (const file of ["safe-direct.yaml", "safe-cncidr.yaml", "safe-reject.yaml", "safe-ai-cn.yaml"]) {
+    for (const file of ["safe-direct.yaml", "safe-cncidr.yaml", "safe-ai-cn.yaml"]) {
       const cache = path.join(root, file);
       if (!fs.existsSync(cache) || !fs.readFileSync(cache, "utf8").slice(0, 600).includes("payload:")) {
         throw new Error(`缺少有效的 ${file}；请先预存安全版规则集`);
@@ -104,6 +104,10 @@ function run(command) {
   }
   if (!Object.hasOwn(variants, command)) {
     throw new Error("用法：node switch-clash-verge.js [status|current|safe]");
+  }
+  if (command === "current" && process.platform === "darwin" &&
+    fs.existsSync("/Library/LaunchDaemons/local.clash-guard.plist")) {
+    throw new Error("系统断网开关仍在运行；先执行 sudo sh \"/Library/Application Support/clash-guard/off.sh\"");
   }
   const variant = inspect(command);
   checkReady(command, variant);

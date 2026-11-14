@@ -5,7 +5,7 @@
 | [clash-verge.js](clash-verge.js) | Clash Verge 现有分流版源码 |
 | [clash-verge-safe.js](clash-verge-safe.js) | Clash Verge 文章链式版，可按需切换 |
 | [switch-clash-verge.js](switch-clash-verge.js) | 本机版本切换命令；运行入口仍为 `Script.js` |
-| [Shadowrocket.conf](Shadowrocket.conf) | Shadowrocket 的分流配置 |
+| [shadowrocket.conf](shadowrocket.conf) | Shadowrocket 的分流配置 |
 | [shadowrocket-safe.conf](shadowrocket-safe.conf) | Shadowrocket 国内直连、其余走首页节点的安全版 |
 
 目前可用的 Clash 现有版与 Shadowrocket 版都用国内域名规则集和 `GEOIP,CN` 补齐直连，并为常用服务保留独立策略组。机场订阅链接是凭证，请保存在本机的 `Merge.yaml` 或 Shadowrocket App 中。
@@ -63,8 +63,8 @@ Clash 版的 Claude 请求另经本机 IPv4 转发层：实时查询目标的 A 
 ## Shadowrocket
 
 1. **添加机场**　在 App 首页添加订阅。
-2. **匹配订阅名**　把 [Shadowrocket.conf](Shadowrocket.conf) 的 `[Proxy Group]` 中的 `Immtele` 和 `Shadowsocks` 换成 App 首页的真实订阅名。手选组用订阅名和 `use=true` 展开单个节点。增减订阅时同步更新组成员。
-3. **导入并测试**　把配置放到 iCloud Drive 的 Shadowrocket 文件夹。在手机上从文件导入并启用当天正式配置，核对「通用 → DNS 覆写」地址末尾为 `#proxy`。将全局路由设为「配置」，再测试常用服务和策略组。
+2. **匹配订阅名**　把 [shadowrocket.conf](shadowrocket.conf) 的 `[Proxy Group]` 中的 `Immtele` 和 `Shadowsocks` 换成 App 首页的真实订阅名。手选组用订阅名和 `use=true` 展开单个节点。增减订阅时同步更新组成员。
+3. **导入并测试**　把 `shadowrocket.conf` 放到 iCloud Drive 的 Shadowrocket 文件夹。在手机上从文件导入并启用，核对「通用 → DNS 覆写」地址末尾为 `#proxy`。将全局路由设为「配置」，再测试常用服务和策略组。
 
 Shadowrocket 内置 `PROXY` 表示首页当前节点。常规代理组初始选择 `PROXY`，先在首页选中已验证可用的节点，再按需在各组中改选 `🚀 main`、地区组或单个节点。bilibili 初始直连，`🐟 Fallback` 和 iCloud 可手选直连。
 
@@ -152,14 +152,14 @@ Clash 使用两个手选组：
 
 此限制针对 AI 业务请求。机场隧道的传输协议由所选节点决定，`🧠 Claude`（Shadowrocket 为 `Claude`）和 `🤖 AI` 组请直接选择已确认使用 TCP 的 Trojan、AnyTLS 等节点。Hysteria2、TUIC 等节点会用 UDP 传输隧道，即使业务请求本身使用 TCP。
 
-Shadowrocket 的 AI UDP 拦截使用逻辑规则引用远程 AI 规则集。导入当天配置后，在手机端核对规则集成功加载、AI 对话可用及 UDP 拦截记录。
+Shadowrocket 的 AI UDP 拦截使用逻辑规则引用远程 AI 规则集。导入 `shadowrocket.conf` 后，在手机端核对规则集成功加载、AI 对话可用及 UDP 拦截记录。
 
 ## 更新流程
 
 - **Clash 现有版**　编辑本机 `clash-verge.js`，完成语法与分流检查后运行 `node switch-clash-verge.js current`，同步到 `Script.js`。转发逻辑变化时运行 `node clash-verge.js --install-claude-ipv4`。核对远程最新版本后提交 `clash-verge.js` 和相关 README，提示用户自行重启 Clash 并验证。维护时不切换 Clash 模式、节点或激活配置。
 - **Clash 文章链式版**　只编辑 `clash-verge-safe.js`，先做语法、规则、独立内核与真实出口链测试。验收通过后运行 `node switch-clash-verge.js safe` 写入 `Script.js`。核对远程版本后提交源码与 README，再由用户自行重启并验证。首次切换时在新组中手选跳板和 ISP 出口。
 - **切换命令**　修改 `switch-clash-verge.js` 后测试 `status`、两版切换及缓存缺失时的拒绝；核对远程版本后单独提交，不触碰私有 `Merge.yaml`。
-- **Shadowrocket**　编辑本机配置，文件名使用当天日期 `Shadowrocket-YYYY-MM-DD.conf`。当天更新沿用该文件名；清理诊断配置和旧修订，保留当天正式配置。检查后提交到仓库的 `Shadowrocket.conf`，再提示用户从 iCloud 导入并启用当天正式配置，核对 DNS 后在手机上测试。
+- **Shadowrocket**　编辑 iCloud 中的 `shadowrocket.conf`，本地与仓库保持同名。检查后提交同名文件，再提示用户在手机上重新导入并启用，核对 DNS 和分流。
 
 ## 对话式流量检测
 

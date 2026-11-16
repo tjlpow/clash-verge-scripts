@@ -1,0 +1,29 @@
+# Clash Verge 全局扩展配置模板。复制到 profiles/Merge.yaml 后填写自己的订阅和 ISP 凭据。
+# 本文件可公开；填写后的 Merge.yaml 只能保存在本机。
+profile:
+  store-selected: true
+
+proxy-providers:
+  Airport:
+    type: http
+    url: "https://example.invalid/replace-with-your-subscription"
+    path: ./providers/airport.yaml
+    interval: 3600
+    exclude-filter: "有效期|剩余|当前流量|到期时间|官网|订阅|群组|重置"
+    health-check:
+      enable: true
+      url: http://www.gstatic.com/generate_204
+      interval: 300
+
+  # safe 版必须有此集合。current 版也用它填充 Claude 出口组。
+  # 若有多家机场，在 ClaudeExit 前按 Airport 格式添加其他集合。
+  ClaudeExit:
+    type: inline
+    payload:
+      - name: ISP-Chain
+        type: socks5
+        server: "replace-with-isp-host"
+        port: 50100
+        username: "replace-with-username"
+        password: "replace-with-password"
+        udp: false
